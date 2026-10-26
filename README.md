@@ -87,11 +87,13 @@ Removing an account requires confirmation and clears only that account's credent
 
 The home view provides recent pages and favorites stored locally per account. The app remembers the last account and page, expanded folders, and reading position on this device. Page headers show their emoji, editing information where available, and sync state. Emoji changes update Collectives on the server. Sync actions remain available separately from Settings; downloads and page refresh are in the collective actions menu.
 
-## Creating pages
+## Creating and renaming pages
 
 Use **New Page** in the page-list toolbar (⇧⌘N on Mac), or **New Subpage…** in a page's context menu. Choose a title and parent, then create the page online. The app refreshes page paths and downloads the new page for offline editing without replacing existing drafts. This action is available only in writable collectives.
 
 If the server confirms creation but a later refresh or download fails, the page remains listed with a retry action. If creation itself is not confirmed, close the dialog and refresh pages before trying again; the app does not automatically repeat the creation request.
+
+Use **Rename…** in a page's context menu, or **Rename Page…** in the collective actions menu for the current page. Rename updates navigation, the page header, and descendant paths without changing Markdown content, drafts, or base revisions. A leading Markdown H1 remains in the source; the native header displays the page name. Landing pages follow the collective name and cannot be renamed here. Renaming requires a connection; an unconfirmed result must be reviewed with Refresh Pages before retrying.
 
 ## Reading and editing
 
@@ -110,7 +112,7 @@ Images load automatically only from the signed-in account's DAV files on its own
 
 Disable automatic sync before practicing manual sync scenarios. Network, authentication, and permission errors preserve local drafts. If the server provides no usable ETag, the app refuses to save unconditionally. Export source if server-side deletion or lost permissions prevent syncing.
 
-Collective downloads include page text only, with incremental checkpoints and resumable retries that preserve drafts. They do not prefetch attachments or images. Local search excludes undownloaded page bodies. Retry currently refreshes clean downloaded pages rather than using conditional downloads. Offline page creation, rename/move/trash/restore, background scheduling, attachment management, and live collaborative editing are not implemented. Mac windows currently share navigation and editing state.
+Collective downloads include page text only, with incremental checkpoints and resumable retries that preserve drafts. They do not prefetch attachments or images. Local search excludes undownloaded page bodies. Retry currently refreshes clean downloaded pages rather than using conditional downloads. Offline page creation, move/trash/restore, background scheduling, attachment management, and live collaborative editing are not implemented. Mac windows currently share navigation and editing state.
 
 ## Validation
 

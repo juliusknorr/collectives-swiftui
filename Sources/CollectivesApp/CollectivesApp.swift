@@ -402,6 +402,26 @@ final class AppModel {
             message = "Page created on the server, but its local copy could not be saved. Refresh or reopen it when storage is available. \(error.localizedDescription)"
         }
     }
+    func renamePage(title: String, pageID: Int, collectiveID: Int, accountID: UUID) async throws {
+        guard !busy, activeID == accountID, selectedCollective == collectiveID, canEdit else {
+            throw CollectivesError.invalidResponse
+        }
+        busy = true; defer { busy = false }
+        await pendingPersistence?.value
+        guard !persistenceFailed else { throw PageRenamingError.unsavedDraft }
+        let result = try await PageRenamer.rename(title: title, pageID: pageID, collectiveID: collectiveID,
+            snapshot: snapshot, api: client())
+        snapshot = result.snapshot
+        if let selected = selectedPage {
+            selectedPage = pages.first(where: { $0.id == selected.id }) ?? snapshot.documents[String(selected.id)]?.page ?? selected
+        }
+        do {
+            try await persist()
+            message = (["Page renamed on the server."] + result.warnings).joined(separator: " ")
+        } catch {
+            message = "Page renamed on the server, but updated paths could not be saved locally. Refresh pages when storage is available. \(error.localizedDescription)"
+        }
+    }
     func addAccount(_ login: LoginCredentials) async throws {
         guard !busy else { throw CollectivesError.invalidResponse }
         busy = true; defer { busy = false }
@@ -429,6 +449,7 @@ struct ContentView: View {
     @AppStorage("closeSidebarAfterCollectiveSwitch") private var closeSidebarAfterCollectiveSwitch = false
     @State private var showSettings = false
     @State private var newPageRequest: NewPageRequest?
+    @State private var renamePageRequest: RenamePageRequest?
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var editing = false
     @State private var showingOutline = false
@@ -533,6 +554,9 @@ struct ContentView: View {
                 Menu {
                     Button("New Page…", systemImage: "doc.badge.plus") { beginNewPage() }
                         .disabled(!model.canEdit || model.pages.isEmpty)
+                    Button("Rename Page…", systemImage: "pencil") {
+                        if let page = model.selectedPage { beginRename(page) }
+                    }.disabled(!model.canEdit || model.selectedPage == nil || model.selectedPage?.parentId == 0)
                     Button("Download for Offline Editing", systemImage: "arrow.down.circle") { Task { await model.downloadCollective() } }
                     Button("Refresh Pages", systemImage: "arrow.clockwise") {
                         if let id = model.selectedCollective { Task { await model.openCollective(id) } }
@@ -648,6 +672,7 @@ struct ContentView: View {
                 search = ""; compactColumn = .detail
             }
         }
+        .sheet(item: $renamePageRequest) { request in RenamePageSheet(model: model, request: request) }
         .sheet(isPresented: $model.showLogin) { LoginView(model: model) }
         #if !os(macOS)
         .sheet(isPresented: $showSettings) { AppSettingsView(model: model) }
@@ -661,6 +686,11 @@ struct ContentView: View {
               let parent = parent ?? model.pages.first(where: { $0.parentId == 0 }) else { return }
         newPageRequest = NewPageRequest(accountID: accountID, collectiveID: collectiveID,
             collectiveName: collectiveTitle, parentID: parent.id)
+    }
+    private func beginRename(_ page: Page) {
+        guard !model.busy, model.canEdit, page.parentId != 0,
+              let accountID = model.activeID, let collectiveID = model.selectedCollective else { return }
+        renamePageRequest = RenamePageRequest(accountID: accountID, collectiveID: collectiveID, page: page)
     }
     private var pageIdentity: String { "\(model.activeID?.uuidString ?? "")/\(model.selectedPage?.id.description ?? "")" }
     private func append(_ snippet: String) { model.edited(model.text + snippet) }
@@ -738,6 +768,8 @@ struct ContentView: View {
         .contextMenu {
             Button(model.library.favoritePageIDs.contains(page.id) ? "Remove from Favorites" : "Add to Favorites", systemImage: "star") { model.toggleFavorite(page.id) }
             Button("Open Page", systemImage: "doc.text") { Task { await model.openPage(page) } }
+            Button("Rename…", systemImage: "pencil") { beginRename(page) }
+                .disabled(model.busy || !model.canEdit || page.parentId == 0)
             Button("New Subpage…", systemImage: "doc.badge.plus") { beginNewPage(parent: page) }
                 .disabled(model.busy || !model.canEdit)
         }

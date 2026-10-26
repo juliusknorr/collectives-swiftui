@@ -64,7 +64,7 @@ struct MarkdownReader: View {
                             ForEach(Array(content.blocks.enumerated()), id: \.offset) { index, block in
                                 Group {
                                     if index == 0, case .heading(level: 1, let anchor, _) = block {
-                                        DocumentHeader(model: model, page: page, title: navigation.headings.first?.title)
+                                        DocumentHeader(model: model, page: page)
                                             .id(anchor)
                                     } else {
                                         MarkdownBlockView(block: block, context: context)

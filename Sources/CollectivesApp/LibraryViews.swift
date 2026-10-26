@@ -4,7 +4,6 @@ import CollectivesCore
 struct DocumentHeader: View {
     @Bindable var model: AppModel
     let page: Page
-    var title: String? = nil
     @State private var showIcons = false
     @State private var error: String?
     var body: some View {
@@ -28,7 +27,7 @@ struct DocumentHeader: View {
                         }
                     }.disabled(model.busy)
                 }
-                Text(title ?? page.title)
+                Text(page.title)
                     .font(.system(size: 32, weight: .bold))
                     .textSelection(.enabled).accessibilityAddTraits(.isHeader)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -286,6 +285,71 @@ struct NewPageSheet: View {
             } catch {
                 self.error = error.localizedDescription
                 if case PageCreationError.unconfirmed = error { unconfirmed = true }
+            }
+            submitting = false
+        }
+    }
+}
+
+struct RenamePageRequest: Identifiable {
+    let id = UUID()
+    let accountID: UUID
+    let collectiveID: Int
+    let page: Page
+}
+
+struct RenamePageSheet: View {
+    @Bindable var model: AppModel
+    let request: RenamePageRequest
+    @Environment(\.dismiss) private var dismiss
+    @State private var title: String
+    @State private var submitting = false
+    @State private var error: String?
+    @State private var unconfirmed = false
+    @FocusState private var titleFocused: Bool
+    init(model: AppModel, request: RenamePageRequest) {
+        self.model = model; self.request = request
+        _title = State(initialValue: request.page.title)
+    }
+    private var canRename: Bool {
+        guard let normalized = try? PageCreator.title(title) else { return false }
+        return normalized != request.page.title && !submitting && !unconfirmed && !model.busy
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text("Rename Page").font(.title2.bold())
+            TextField("Title", text: $title).textFieldStyle(.roundedBorder).focused($titleFocused)
+                .onSubmit { if canRename { rename() } }
+                .disabled(submitting || unconfirmed)
+            Text("Renaming requires a connection and updates the page name and subpage paths. Markdown content and local drafts stay unchanged.")
+                .font(.callout).foregroundStyle(.secondary)
+            if let error { Text(error).foregroundStyle(.red).font(.callout).textSelection(.enabled) }
+            HStack {
+                if submitting { ProgressView().controlSize(.small); Text("Renaming…").foregroundStyle(.secondary) }
+                Spacer()
+                Button(unconfirmed ? "Close" : "Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction).disabled(submitting)
+                Button("Rename") { rename() }.keyboardShortcut(.defaultAction).disabled(!canRename)
+            }
+        }
+        .padding(24).frame(idealWidth: 440)
+        #if os(macOS)
+        .frame(width: 440)
+        #endif
+        .interactiveDismissDisabled(submitting)
+        .onAppear { titleFocused = true }
+    }
+    private func rename() {
+        guard canRename else { return }
+        submitting = true; error = nil
+        Task {
+            do {
+                try await model.renamePage(title: title, pageID: request.page.id,
+                    collectiveID: request.collectiveID, accountID: request.accountID)
+                dismiss()
+            } catch {
+                self.error = error.localizedDescription
+                if case PageRenamingError.unconfirmed = error { unconfirmed = true }
             }
             submitting = false
         }
