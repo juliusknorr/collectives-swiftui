@@ -156,6 +156,13 @@ public struct CollectivesClient: Sendable {
             path: ["ocs", "v2.php", "apps", "collectives", "api", "v1.0", "collectives", String(collectiveID), "pages", String(parentID)],
             method: "POST", body: JSONEncoder().encode(["title": title])).page
     }
+    public func renamePage(collectiveID: Int, pageID: Int, title: String) async throws -> Page {
+        struct Result: Decodable { let page: Page }
+        let title = try PageCreator.title(title)
+        return try await ocs(Result.self,
+            path: ["ocs", "v2.php", "apps", "collectives", "api", "v1.0", "collectives", String(collectiveID), "pages", String(pageID)],
+            method: "PUT", body: JSONEncoder().encode(["title": title])).page
+    }
     public func setPageEmoji(pageID: Int, collectiveID: Int, emoji: String?) async throws -> Page {
         struct Result: Decodable { let page: Page }
         let value: [String: String?] = ["emoji": emoji]

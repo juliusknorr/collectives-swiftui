@@ -170,3 +170,15 @@ private let page = Page(id: 42, title: "Notes", fileName: "Notes #1.md", filePat
     #expect(requests[0].value(forHTTPHeaderField: "Content-Type") == "application/json")
     #expect(try JSONDecoder().decode([String: String].self, from: requests[0].httpBody!) == ["title": "Ideas & 🌱"])
 }
+
+@Test func renameRequestDoesNotMoveOrCopyPage() async throws {
+    let response = #"{"ocs":{"meta":{"statuscode":200},"data":{"page":{"id":43,"title":"Renamed 🌱","fileName":"Renamed 🌱.md","filePath":"Notes","parentId":42,"collectivePath":"Collectives/Team"}}}}"#
+    let transport = StubTransport([(200, response, [:])])
+    let client = CollectivesClient(account: Account(serverURL: server, userID: "alice"), credential: Credential(loginName: "alice", appPassword: "secret"), transport: transport)
+    let page = try await client.renamePage(collectiveID: 3, pageID: 43, title: " Renamed 🌱 ")
+    #expect(page.id == 43)
+    let requests = await transport.requests
+    #expect(requests[0].httpMethod == "PUT")
+    #expect(requests[0].url?.path == "/nextcloud/ocs/v2.php/apps/collectives/api/v1.0/collectives/3/pages/43")
+    #expect(try JSONDecoder().decode([String: String].self, from: requests[0].httpBody!) == ["title": "Renamed 🌱"])
+}
