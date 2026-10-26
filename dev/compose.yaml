@@ -1,0 +1,34 @@
+name: collectives-dev
+
+services:
+  nextcloud:
+    image: nextcloud:33.0.10-apache
+    ports:
+      - "127.0.0.1:${NEXTCLOUD_PORT:-8080}:80"
+    environment:
+      SQLITE_DATABASE: nextcloud
+      NEXTCLOUD_ADMIN_USER: admin
+      NEXTCLOUD_ADMIN_PASSWORD: local-admin-only
+      NEXTCLOUD_TRUSTED_DOMAINS: "localhost 127.0.0.1"
+      OVERWRITECLIURL: "http://localhost:${NEXTCLOUD_PORT:-8080}"
+      PHP_MEMORY_LIMIT: 256M
+      PHP_UPLOAD_LIMIT: 32M
+    volumes:
+      - nextcloud:/var/www/html
+      - ./bootstrap.sh:/opt/collectives-dev/bootstrap.sh:ro
+    mem_limit: 1536m
+    cpus: 2
+    pids_limit: 256
+    healthcheck:
+      test:
+        - CMD
+        - php
+        - -r
+        - 'exit((json_decode(@file_get_contents("http://localhost/status.php") ?: "{}", true)["installed"] ?? false) ? 0 : 1);'
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+volumes:
+  nextcloud:

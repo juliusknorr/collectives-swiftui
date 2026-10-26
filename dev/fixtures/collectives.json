@@ -1,0 +1,98 @@
+[
+  {
+    "owner": "alice",
+    "name": "Team handbook",
+    "pages": [
+      {"title": "Welcome", "file": "welcome.md"},
+      {"title": "Offline guide", "file": "offline.md"},
+      {"title": "Conflict practice", "parent": "Offline guide", "file": "conflicts.md"},
+      {"title": "Markdown playground", "file": "markdown.md"}
+    ]
+  },
+  {
+    "owner": "alice",
+    "name": "Project notes",
+    "pages": [
+      {"title": "Welcome", "file": "project.md"},
+      {"title": "Release checklist", "file": "release.md"}
+    ]
+  },
+  {
+    "owner": "bob",
+    "name": "Bob's notebook",
+    "pages": [
+      {"title": "Welcome", "file": "bob.md"},
+      {"title": "Markdown playground", "file": "markdown.md"}
+    ]
+  },
+  {
+    "owner": "alice",
+    "name": "Cooking club",
+    "emoji": "🍳",
+    "pages": [
+      {"title": "Welcome", "emoji": "👋", "file": "cooking/welcome.md"},
+      {"title": "Breakfast", "emoji": "🥞", "file": "cooking/breakfast.md"},
+      {"title": "Fluffy pancakes", "parent": "Breakfast", "emoji": "🥞", "file": "cooking/pancakes.md"},
+      {"title": "Shakshuka", "parent": "Breakfast", "emoji": "🍳", "file": "cooking/shakshuka.md"},
+      {"title": "Overnight oats", "parent": "Breakfast", "emoji": "🥣", "file": "cooking/overnight-oats.md"},
+      {"title": "Pão de queijo", "parent": "Breakfast", "emoji": "🧀", "file": "cooking/pao-de-queijo.md"},
+      {"title": "Eggs Benedict", "parent": "Breakfast", "emoji": "🥚", "file": "cooking/eggs-benedict.md"},
+      {"title": "Soups", "emoji": "🍲", "file": "cooking/soups.md"},
+      {"title": "Tomato soup", "parent": "Soups", "emoji": "🍅", "file": "cooking/tomato-soup.md"},
+      {"title": "Minestrone", "parent": "Soups", "emoji": "🥕", "file": "cooking/minestrone.md"},
+      {"title": "Pho bò", "parent": "Soups", "emoji": "🍜", "file": "cooking/pho.md"},
+      {"title": "Lentil soup", "parent": "Soups", "emoji": "🫘", "file": "cooking/lentil-soup.md"},
+      {"title": "Gazpacho", "parent": "Soups", "emoji": "🥒", "file": "cooking/gazpacho.md"},
+      {"title": "Pasta", "emoji": "🍝", "file": "cooking/pasta.md"},
+      {"title": "Spaghetti carbonara", "parent": "Pasta", "emoji": "🥓", "file": "cooking/carbonara.md"},
+      {"title": "Carbonara variations", "parent": "Pasta/Spaghetti carbonara", "emoji": "🔀", "file": "cooking/carbonara-variations.md"},
+      {"title": "Vegetarian carbonara", "parent": "Pasta/Spaghetti carbonara/Carbonara variations", "emoji": "🌿", "file": "cooking/vegetarian-carbonara.md"},
+      {"title": "Smoky mushroom version", "parent": "Pasta/Spaghetti carbonara/Carbonara variations/Vegetarian carbonara", "emoji": "💨", "file": "cooking/smoky-mushroom.md"},
+      {"title": "Cacio e pepe", "parent": "Pasta", "emoji": "🧂", "file": "cooking/cacio-e-pepe.md"},
+      {"title": "Lasagne", "parent": "Pasta", "emoji": "🫕", "file": "cooking/lasagne.md"},
+      {"title": "Pad thai", "parent": "Pasta", "emoji": "🥢", "file": "cooking/pad-thai.md"},
+      {"title": "Mac & cheese", "parent": "Pasta", "emoji": "🧀", "file": "cooking/mac-and-cheese.md"},
+      {"title": "Mains", "emoji": "🍽️", "file": "cooking/mains.md"},
+      {"title": "Roast chicken", "parent": "Mains", "emoji": "🍗", "file": "cooking/roast-chicken.md"},
+      {"title": "Beef bourguignon", "parent": "Mains", "emoji": "🍷", "file": "cooking/bourguignon.md"},
+      {"title": "Chicken tikka masala", "parent": "Mains", "emoji": "🍛", "file": "cooking/tikka-masala.md"},
+      {"title": "Fish tacos", "parent": "Mains", "emoji": "🌮", "file": "cooking/fish-tacos.md"},
+      {"title": "Ratatouille", "parent": "Mains", "emoji": "🍆", "file": "cooking/ratatouille.md"},
+      {"title": "Vegetarian", "emoji": "🥦", "file": "cooking/vegetarian.md"},
+      {"title": "Falafel", "parent": "Vegetarian", "emoji": "🧆", "file": "cooking/falafel.md"},
+      {"title": "Mushroom risotto", "parent": "Vegetarian", "emoji": "🍄", "file": "cooking/mushroom-risotto.md"},
+      {"title": "Palak paneer", "parent": "Vegetarian", "emoji": "🥬", "file": "cooking/palak-paneer.md"},
+      {"title": "Stuffed peppers", "parent": "Vegetarian", "emoji": "🫑", "file": "cooking/stuffed-peppers.md"},
+      {"title": "Buddha bowl", "parent": "Vegetarian", "emoji": "🥗", "file": "cooking/buddha-bowl.md"},
+      {"title": "Desserts", "emoji": "🍰", "file": "cooking/desserts.md"},
+      {"title": "Crème brûlée", "parent": "Desserts", "emoji": "🍮", "file": "cooking/creme-brulee.md"},
+      {"title": "Chocolate chip cookies", "parent": "Desserts", "emoji": "🍪", "file": "cooking/cookies.md"},
+      {"title": "Cookie science", "parent": "Desserts/Chocolate chip cookies", "emoji": "🧪", "file": "cooking/cookie-science.md"},
+      {"title": "Tiramisu", "parent": "Desserts", "emoji": "☕", "file": "cooking/tiramisu.md"},
+      {"title": "Apple crumble", "parent": "Desserts", "emoji": "🍎", "file": "cooking/apple-crumble.md"},
+      {"title": "Mango sticky rice", "parent": "Desserts", "emoji": "🥭", "file": "cooking/mango-sticky-rice.md"},
+      {"title": "Breads", "emoji": "🍞", "file": "cooking/breads.md"},
+      {"title": "Sourdough loaf", "parent": "Breads", "emoji": "🥖", "file": "cooking/sourdough.md"},
+      {"title": "Starter care", "parent": "Breads/Sourdough loaf", "emoji": "🫙", "file": "cooking/starter-care.md"},
+      {"title": "Reviving a sleepy starter", "parent": "Breads/Sourdough loaf/Starter care", "emoji": "😴", "file": "cooking/reviving-starter.md"},
+      {"title": "Scoring patterns", "parent": "Breads/Sourdough loaf", "emoji": "✂️", "file": "cooking/scoring.md"},
+      {"title": "Focaccia", "parent": "Breads", "emoji": "🫓", "file": "cooking/focaccia.md"},
+      {"title": "Naan", "parent": "Breads", "emoji": "🫓", "file": "cooking/naan.md"},
+      {"title": "100% rye bread", "parent": "Breads", "emoji": "🌾", "file": "cooking/rye-bread.md"},
+      {"title": "Cinnamon rolls", "parent": "Breads", "emoji": "🌀", "file": "cooking/cinnamon-rolls.md"},
+      {"title": "Sauces", "emoji": "🥫", "file": "cooking/sauces.md"},
+      {"title": "Hollandaise", "parent": "Sauces", "emoji": "🍋", "file": "cooking/hollandaise.md"},
+      {"title": "Béarnaise", "parent": "Sauces/Hollandaise", "emoji": "🌱", "file": "cooking/bearnaise.md"},
+      {"title": "Sauce maltaise", "parent": "Sauces/Hollandaise", "emoji": "🍊", "file": "cooking/maltaise.md"},
+      {"title": "Ragù alla bolognese", "parent": "Sauces", "emoji": "🍖", "file": "cooking/ragu.md"},
+      {"title": "Pesto genovese", "parent": "Sauces", "emoji": "🌿", "file": "cooking/pesto.md"},
+      {"title": "Chimichurri", "parent": "Sauces", "emoji": "🌶️", "file": "cooking/chimichurri.md"},
+      {"title": "Tahini sauce", "parent": "Sauces", "emoji": "🥜", "file": "cooking/tahini.md"},
+      {"title": "Kitchen basics", "emoji": "🔪", "file": "cooking/kitchen-basics.md"},
+      {"title": "Equipment", "parent": "Kitchen basics", "emoji": "🧰", "file": "cooking/equipment.md"},
+      {"title": "Knives", "parent": "Kitchen basics/Equipment", "emoji": "🔪", "file": "cooking/knives.md"},
+      {"title": "Pans", "parent": "Kitchen basics/Equipment", "emoji": "🍳", "file": "cooking/pans.md"},
+      {"title": "Seasoning cast iron", "parent": "Kitchen basics/Equipment/Pans", "emoji": "🛢️", "file": "cooking/seasoning-cast-iron.md"}
+    ]
+  }
+]

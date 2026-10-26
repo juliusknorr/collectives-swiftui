@@ -1,0 +1,44 @@
+# Local implementation notes
+/PLAN.md
+
+# SwiftPM, Xcode, and generated app bundles
+.build/
+.swiftpm/
+DerivedData/
+build/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+*.app/
+*.dSYM/
+*.xcarchive/
+*.ipa
+
+# Local signing identities and provisioning
+.local-signing/
+*.keychain
+*.keychain-db
+*.p12
+*.pfx
+*.mobileprovision
+*.provisionprofile
+
+# Environment files (keep documented examples)
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# macOS metadata and editor leftovers
+.DS_Store
+._*
+*.swp
+*.swo
+*~

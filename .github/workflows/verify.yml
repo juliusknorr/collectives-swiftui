@@ -1,0 +1,28 @@
+name: Verify
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  swift:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift test
+      - name: Build native Mac app
+        run: xcodebuild -project Collectives.xcodeproj -scheme Collectives -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO build
+      - name: Build iOS app
+        run: xcodebuild -project Collectives.xcodeproj -scheme Collectives -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+  server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s dev/tests -v
+      - run: bash dev/setup.sh
+      - run: python3 dev/seed.py
+      - name: Verify real instance
+        run: python3 dev/smoke.py
+      - if: failure()
+        run: docker compose -f dev/compose.yaml logs --tail=150
+      - if: always()
+        run: docker compose -f dev/compose.yaml down --volumes
