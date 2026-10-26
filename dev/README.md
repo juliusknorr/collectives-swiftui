@@ -85,7 +85,7 @@ sh -n dev/setup.sh dev/bootstrap.sh
 python3 -m unittest discover -s dev/tests -v
 
 # Integration checks against the running server. Creates and trashes temporary parent/child
-# pages and verifies stale-ETag rejection without modifying example page bodies.
+# pages, verifies parent rename/content preservation, and checks stale-ETag rejection without modifying example page bodies.
 python3 dev/smoke.py
 ```
 

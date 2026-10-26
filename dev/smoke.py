@@ -69,6 +69,20 @@ def main():
         require(child["parentId"] == page["id"], "Created subpage has the wrong parent.")
         child_body, _ = alice.request("GET", dav_path("alice", child))
         child_body.decode("utf-8")
+        parent_body, _ = alice.request("GET", dav_path("alice", page))
+        old_child_path = dav_path("alice", child)
+        new_title = "Renamed smoke 🌱 " + uuid4().hex[:8]
+        renamed = alice.ocs("PUT", f"{endpoint}/{page['id']}", {"title": new_title})["page"]
+        require(renamed["id"] == page["id"], "Renaming changed the page identity.")
+        require(renamed["title"] == new_title, "Renamed page title was not returned.")
+        refreshed = alice.ocs("GET", endpoint)["pages"]
+        page = next(p for p in refreshed if p["id"] == page["id"])
+        child = next(p for p in refreshed if p["id"] == child["id"])
+        require(dav_path("alice", child) != old_child_path, "Renaming a parent did not update its child path.")
+        renamed_body, _ = alice.request("GET", dav_path("alice", page))
+        renamed_child_body, _ = alice.request("GET", dav_path("alice", child))
+        require(renamed_body == parent_body, "Renaming rewrote the parent Markdown.")
+        require(renamed_child_body == child_body, "Renaming rewrote the child Markdown.")
         path = dav_path("alice", page)
         _, headers = alice.request("GET", path)
         stale_etag = headers["ETag"]
@@ -97,7 +111,7 @@ def main():
     flow = json.loads(body)
     require(bool(flow.get("login")) and bool(flow.get("poll", {}).get("token"))
             and bool(flow.get("poll", {}).get("endpoint")), "Login Flow v2 initiation failed.")
-    print("Real-server smoke checks passed: accounts, nested page creation, repeat seed, DAV, ETags, Login Flow v2 initiation.")
+    print("Real-server smoke checks passed: accounts, nested creation and rename, repeat seed, DAV, ETags, Login Flow v2 initiation.")
 
 
 if __name__ == "__main__":
