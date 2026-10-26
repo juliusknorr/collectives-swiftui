@@ -42,3 +42,5 @@ venv/
 *.swp
 *.swo
 *~
+# A development worktree may reuse the local signing directory through a symlink.
+.local-signing
