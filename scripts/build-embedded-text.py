@@ -28,6 +28,23 @@ with tempfile.TemporaryDirectory() as temporary:
     code = code.replace('c.map(r=>{', 'c.filter(r=>r.endsWith(".css")).map(r=>{')
     code = code.replace('s.crossOrigin="",', '')
     preload.write_text(code)
+    # Pinned embedding extension: replace a standalone document without Vue/
+    # Tiptap remounting, suppress initial updates and reset all plugin history.
+    entry = staging / 'js/text-editor.mjs'
+    original = 'setContent(e){return this.#n.content=e,this.#t.setContent?.(e),this}'
+    reset = """resetMarkdownContent(e){
+        this.#t.setContent(e,{addToHistory:false});
+        const n=this.#t.editor;
+        n.view.updateState(n.state.constructor.create({schema:n.schema,doc:n.state.doc,plugins:n.state.plugins}));
+        this.#t.updateHeadings?.();
+        n.emit('transaction',{editor:n,transaction:n.state.tr,appendedTransactions:[]});
+        n.emit('selectionUpdate',{editor:n,transaction:n.state.tr});
+        return {canUndo:n.can().undo(),canRedo:n.can().redo()};
+    }"""
+    entry_code = entry.read_text()
+    if entry_code.count(original) != 1:
+        raise SystemExit('Pinned Text embedding entry changed; review reset adapter before packaging.')
+    entry.write_text(entry_code.replace(original, original + reset))
     subprocess.run(['npx', '--yes', 'esbuild@0.25.12', str(staging / 'js/text-editor.mjs'),
                     '--bundle', '--format=iife', '--platform=browser', '--minify',
                     '--define:import.meta.url=document.baseURI', '--legal-comments=eof',
@@ -45,5 +62,6 @@ with tempfile.TemporaryDirectory() as temporary:
     'source': f'https://github.com/nextcloud/text/tree/{PIN}',
     'license': 'AGPL-3.0-or-later', 'bundler': 'esbuild@0.25.12',
     'adjustments': ['Fold dynamic imports into a classic IIFE', 'Preload CSS only without a crossorigin attribute for local-file WebKit',
-                    'Resolve import.meta.url against the local document']
+                    'Resolve import.meta.url against the local document',
+                    'Add resetMarkdownContent for silent document replacement with fresh plugin state']
 }, indent=2) + '\n')

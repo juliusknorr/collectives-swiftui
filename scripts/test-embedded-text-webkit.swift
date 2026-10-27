@@ -13,6 +13,7 @@ final class Smoke: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     let source = "# Offline 📝\n\nOriginal **bold** text.\n"
     var edits = [String]()
     var loaded = false
+    var editing = false
     let root: URL
 
     init(root: URL) { self.root = root }
@@ -44,6 +45,8 @@ final class Smoke: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
             openedAt = Date()
             view.callAsyncJavaScript("""
                 const editor = await window.startTextEditor(input);
+                await new Promise(resolve => setTimeout(resolve, 25));
+                window.webkit.messageHandlers.textEditor.postMessage({type:'editing',session:input.session});
                 editor.insertAtCursor(' Offline edit 日本語');
                 await window.finishTextEditor();
                 return null;
@@ -54,16 +57,22 @@ final class Smoke: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
             guard edits.isEmpty else { fail("Loading changed source") }
             loaded = true
             print("Page \(stage + 1) ready after \(Int(Date().timeIntervalSince(openedAt) * 1000)) ms")
+        case "editing": editing = true
         case "update":
-            guard loaded, body["session"] as? String == session, let markdown = body["markdown"] as? String else { fail("Invalid update loaded=\(loaded): \(body)") }
+            guard loaded, editing, body["session"] as? String == session, let markdown = body["markdown"] as? String else { fail("Invalid update loaded=\(loaded): \(body)") }
             edits.append(markdown)
         case "finished":
             if stage == 0 {
                 guard loaded, edits.last?.contains("Offline edit 日本語") == true,
                       edits.last?.contains("**bold**") == true else { fail("Rich input did not round-trip") }
-                stage = 1; session = UUID().uuidString; loaded = false; edits = []; openedAt = Date()
+                stage = 1; session = UUID().uuidString; loaded = false; editing = false; edits = []; openedAt = Date()
                 view.callAsyncJavaScript("""
-                    await window.startTextEditor(input);
+                    const editor = await window.startTextEditor(input);
+                    await new Promise(resolve => setTimeout(resolve, 25));
+                    const html = editor.getHTML();
+                    const state = editor.resetMarkdownContent(input.markdown);
+                    if (state.canUndo || state.canRedo) throw new Error('Previous page undo/redo history leaked');
+                    if (editor.getHTML() !== html) throw new Error('Reset changed rendered content');
                     await window.finishTextEditor();
                     return null;
                     """, arguments: ["input": ["session": session, "markdown": "# Second page\n\nExact **source**\n"]], in: nil, in: .page) { result in
@@ -72,7 +81,7 @@ final class Smoke: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
             } else {
                 guard loaded, edits.isEmpty else { fail("Page reuse rewrote source or leaked prior edits") }
                 timeout?.invalidate()
-                print("PASS: Offline Text cold/warm startup, rich Unicode edit, Markdown serialization, and second-page reuse without rewriting source.")
+                print("PASS: Offline Text cold/warm startup, rich Unicode edit, Markdown serialization, and mounted-editor reuse without rewriting source or leaking undo/redo history.")
                 exit(0)
             }
         case "error": fail("Offline editor reported a runtime failure")

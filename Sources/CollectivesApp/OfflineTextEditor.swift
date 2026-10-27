@@ -2,7 +2,7 @@ import SwiftUI
 import CollectivesCore
 @preconcurrency import WebKit
 
-/// One local runtime, warmed at launch and reused without retaining page undo history.
+/// One mounted local editor, with fresh document/plugin state for each page.
 @MainActor @Observable
 final class OfflineTextRuntime: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     private(set) var loaded = false
@@ -117,6 +117,7 @@ final class OfflineTextRuntime: NSObject, WKScriptMessageHandler, WKNavigationDe
 @MainActor
 struct OfflineTextPage: View {
     @Bindable var runtime: OfflineTextRuntime
+    @State private var showProgress = false
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -125,14 +126,22 @@ struct OfflineTextPage: View {
                 Text("Original source backed up · Sync paused")
             }.font(.caption).foregroundStyle(.secondary).padding(.vertical, 6)
             ZStack {
-                OfflineTextWebView(runtime: runtime).opacity(runtime.loaded ? 1 : 0).allowsHitTesting(runtime.loaded)
+                OfflineTextWebView(runtime: runtime)
+                    .allowsHitTesting(runtime.loaded)
+                    .accessibilityHidden(!runtime.loaded)
                 if runtime.failed {
                     ContentUnavailableView("Rich Text Unavailable", systemImage: "exclamationmark.triangle",
                         description: Text("Switch to View or Edit. Saved edits and the original source are retained."))
-                } else if !runtime.loaded {
+                } else if !runtime.loaded && showProgress {
                     ProgressView("Preparing rich text…")
                 }
             }
+        }
+        .task(id: runtime.loaded) {
+            showProgress = false
+            guard !runtime.loaded else { return }
+            do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
+            if !runtime.loaded { showProgress = true }
         }
     }
 }

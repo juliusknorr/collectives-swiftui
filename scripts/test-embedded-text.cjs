@@ -6,12 +6,17 @@ const path = require('node:path');
 const messages = [];
 let options;
 let destroys = 0;
+let creates = 0;
+let resets = 0;
 let readOnly = false;
 const window = {
     webkit: { messageHandlers: { textEditor: { postMessage(value) { messages.push(value) } } } },
     OCA: { Text: { async createMarkdownContentEditor(input) {
-        options = input; input.onLoaded();
-        return { setReadOnly(value) { readOnly = value }, destroy() { destroys++ } };
+        creates++; options = input; input.onLoaded();
+        return {
+            setReadOnly(value) { readOnly = value }, destroy() { destroys++ },
+            resetMarkdownContent(content) { resets++; options.content = content; return { canUndo: false, canRedo: false } },
+        };
     } } },
     reportTextError() { throw new Error('Unexpected adapter error') },
 };
@@ -35,7 +40,8 @@ vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../Resources/EmbeddedTe
     assert.equal(messages[4].revision, 2);
     assert.equal(messages[4].session, 'one');
     assert.equal(readOnly, true);
-    assert.equal(destroys, 2, 'Discard the warm editor and the closed page undo history');
+    assert.equal(destroys, 0, 'Page switches must keep the editor mounted');
+    assert.equal(options.content, '', 'A closed page must not retain document content');
     await window.startTextEditor({ session: 'two', markdown: 'replacement' });
     assert.equal(options.content, 'replacement');
     options.onUpdate({ markdown: 'second page' });
@@ -48,5 +54,7 @@ vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../Resources/EmbeddedTe
     await Promise.all([third, finished]);
     assert.equal(messages.at(-1).type, 'finished');
     assert.equal(messages.at(-1).session, 'three');
-    console.log('Offline Text warm/reuse/flush/page-isolation contracts passed.');
+    assert.equal(creates, 1, 'Reuse the warmed editor across all pages');
+    assert.equal(resets, 6, 'Reset each opened and closed document');
+    console.log('Offline Text mounted-editor/flush/page-isolation contracts passed.');
 })().catch(error => { console.error(error); process.exitCode = 1 });

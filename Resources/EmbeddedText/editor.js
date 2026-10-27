@@ -28,21 +28,24 @@
         return instance;
     };
     window.startTextEditor = (input) => enqueue(async () => {
-        // Drop the previous document's undo history and selection, retaining the
-        // parsed JS modules, loaded styles and WebKit process for fast switches.
+        // Replace the document in the mounted editor. A fresh EditorState drops
+        // undo, selection and plugin state without remounting Vue or Tiptap.
         session = undefined;
         revision = 0;
-        await create(input.markdown, false);
+        instance.resetMarkdownContent(input.markdown);
+        instance.setReadOnly(false);
+        // Vue applies editable state in a microtask; suppress its synthetic
+        // update before binding this page's native draft callback.
+        await Promise.resolve();
         session = input.session;
         post({ type: 'loaded', session });
         return instance;
     });
     window.finishTextEditor = () => enqueue(() => {
-        instance?.setReadOnly(true);
-        instance?.destroy();
-        instance = undefined;
         const finished = session;
         session = undefined;
+        instance?.setReadOnly(true);
+        instance?.resetMarkdownContent('');
         post({ type: 'finished', session: finished });
     });
     enqueue(async () => { await create('', true); post({ type: 'warmed' }) });
