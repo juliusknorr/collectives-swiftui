@@ -66,6 +66,12 @@ See the [development guide](docs/development.md) for build options, signing,
 tests, and project layout, or the [test server guide](dev/README.md) for fixtures
 and server commands.
 
+## AI usage
+
+This app is developed with the help of AI coding agents. A human reviews and tests
+every change before it is committed. Commits that had AI assistance carry an
+`Assisted-by: AGENT:MODEL` trailer, so `git log` shows where it was used.
+
 ## License
 
 [GNU AGPL v3](LICENSE). Dependency notices are in [ThirdParty](ThirdParty/).
