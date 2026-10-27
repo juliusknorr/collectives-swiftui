@@ -86,7 +86,7 @@ final class AppModel {
     var textSession: EmbeddedTextSession?
     var pageMode: PageViewMode = .view
     let textRuntime = OfflineTextRuntime()
-    private let modePreferences = PageModePreferences()
+    private let modePreferences: PageModePreferences
     var showLogin = false
     var settingsLogin = false
     var loginServer = "https://"
@@ -96,8 +96,9 @@ final class AppModel {
     private let preferences: LibraryPreferences
     private let store: LocalStore
     private let credentials = KeychainCredentialStore()
-    private let makeClient: @MainActor (Account) throws -> CollectivesClient
-    private var clients: [UUID: CollectivesClient] = [:]
+    private let makeClient: @MainActor (Account) async throws -> CollectivesClient
+    private var cachedClients: [Account: CollectivesClient] = [:]
+    private var clientGeneration = UUID()
     private var accountSyncTasks: [UUID: Task<Void, Error>] = [:]
     private var removingAccountIDs: Set<UUID> = []
     private var pushConnected = false
@@ -114,12 +115,16 @@ final class AppModel {
     private var lastEdit = Date.distantPast
 
     init(store: LocalStore? = nil, preferences: LibraryPreferences = LibraryPreferences(),
-         makeClient: (@MainActor (Account) throws -> CollectivesClient)? = nil) {
+         modePreferences: PageModePreferences = PageModePreferences(),
+         makeClient: (@MainActor (Account) async throws -> CollectivesClient)? = nil) {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         self.store = store ?? LocalStore(root: base.appendingPathComponent("Collectives", isDirectory: true))
         self.preferences = preferences
+        self.modePreferences = modePreferences
         self.makeClient = makeClient ?? { account in
-            guard let credential = try KeychainCredentialStore().credential(accountID: account.id) else {
+            guard let credential = try await Task.detached(operation: {
+                try KeychainCredentialStore().credential(accountID: account.id)
+            }).value else {
                 throw CollectivesError.invalidResponse
             }
             return CollectivesClient(account: account, credential: credential)
@@ -163,9 +168,9 @@ final class AppModel {
                 catch { collectiveListingErrors[account.id] = error.localizedDescription }
             }
             if let target = accounts.first(where: { $0.id == preferences.lastAccountID }) ?? accounts.first {
-                await selectAccount(target.id)
-                await syncAccounts()
+                await selectAccount(target.id, refresh: false)
                 await restoreSelection()
+                if pageMode != .richText { await syncAccounts() }
             } else {
                 message = "Add an account to get started."
             }
@@ -173,23 +178,33 @@ final class AppModel {
     }
     func client() throws -> CollectivesClient {
         guard let account else { throw CollectivesError.invalidResponse }
-        return try client(for: account)
+        guard let client = cachedClients[account] else { throw CollectivesError.invalidResponse }
+        return client
     }
-    /// One client per account keeps Keychain reads and URL sessions out of the render and sync loops.
-    private func client(for account: Account) throws -> CollectivesClient {
+    private func activeClient() async throws -> CollectivesClient {
+        guard let account else { throw CollectivesError.invalidResponse }
+        return try await client(for: account)
+    }
+    private func client(for account: Account) async throws -> CollectivesClient {
         guard canSyncAccount(account.id) else { throw CancellationError() }
-        if let cached = clients[account.id] { return cached }
-        let created = try makeClient(account)
-        clients[account.id] = created
-        return created
+        if let client = cachedClients[account] { return client }
+        let generation = clientGeneration
+        let client = try await makeClient(account)
+        guard clientGeneration == generation, canSyncAccount(account.id), accounts.contains(account) else { throw CancellationError() }
+        cachedClients[account] = client
+        return client
     }
-    func selectAccount(_ id: UUID) async {
+    private func invalidateClient(accountID: UUID) {
+        cachedClients = cachedClients.filter { $0.key.id != accountID }
+        clientGeneration = UUID()
+    }
+    func selectAccount(_ id: UUID, refresh: Bool = true) async {
         guard !busy, accounts.contains(where: { $0.id == id }) else { return }
         busy = true; defer { busy = false; resumeTextEditing() }
         await finishTextEditing()
         await pendingPersistence?.value
         guard !persistenceFailed else { message = "Save the current draft successfully before switching accounts."; return }
-        _ = await loadAccount(id)
+        _ = await loadAccount(id, refresh: refresh)
     }
     private func loadAccount(_ id: UUID, refresh: Bool = true) async -> Bool {
         if let previousID = activeID { accountCollectives[previousID] = snapshot.collectives }
@@ -207,7 +222,9 @@ final class AppModel {
         preferences.lastAccountID = id
         guard refresh else { return true }
         do {
-            let remote = try await client().collectives()
+            guard let account else { throw CollectivesError.invalidResponse }
+            let api = try await client(for: account)
+            let remote = try await api.collectives()
             snapshot.replaceCollectives(remote)
             accountCollectives[id] = snapshot.collectives
             try await persist(); message = "Collectives refreshed."
@@ -250,13 +267,13 @@ final class AppModel {
         }
     }
     @discardableResult
-    func openCollective(_ id: Int) async -> Bool {
+    func openCollective(_ id: Int, refresh: Bool = true) async -> Bool {
         guard !busy, snapshot.collectives.contains(where: { $0.id == id }) else { return false }
         busy = true; defer { busy = false; resumeTextEditing() }
         await finishTextEditing()
         await pendingPersistence?.value
         guard !persistenceFailed else { message = "Save the current draft before switching collectives."; return false }
-        await loadCollective(id)
+        await loadCollective(id, refresh: refresh)
         return true
     }
     func openSidebar(accountID: UUID, collectiveID: Int?) async -> Bool {
@@ -276,11 +293,12 @@ final class AppModel {
         }
         return true
     }
-    private func loadCollective(_ id: Int) async {
+    private func loadCollective(_ id: Int, refresh: Bool = true) async {
         selectedCollective = id; selectedPage = nil; text = ""
         library.collectiveID = id; library.pageID = nil; saveLibrary()
+        guard refresh else { message = "Using downloaded pages."; return }
         do {
-            snapshot.replacePages(try await client().pages(collectiveID: id), collectiveID: id)
+            snapshot.replacePages(try await activeClient().pages(collectiveID: id), collectiveID: id)
             try await persist(); message = "Select a page."
         } catch {
             if let id = activeID { syncIssues[id] = SyncIssue(error: error) }
@@ -305,7 +323,7 @@ final class AppModel {
         if snapshot.documents[key] == nil {
             message = "Downloading the next page…"
             do {
-                let body = try await client().download(page: page)
+                let body = try await activeClient().download(page: page)
                 snapshot.documents[key] = CachedDocument(page: page, collectiveID: selectedCollective!, markdown: body.markdown, etag: body.etag)
                 try await persist()
             } catch {
@@ -480,7 +498,7 @@ final class AppModel {
         do {
             try await performAccountSync(id) { [self] in
                 let localStore = store
-                let result = try await AccountSynchronizer.download(collectiveID: collectiveID, snapshot: snapshot, api: client(), progress: { progress in
+                let result = try await AccountSynchronizer.download(collectiveID: collectiveID, snapshot: snapshot, api: activeClient(), progress: { progress in
                     await self.reportSyncProgress(progress, account: target, index: 1, total: 1)
                 }) { value in
                     try Task.checkCancellation()
@@ -676,9 +694,12 @@ final class AppModel {
     private func listenForChanges(account target: Account, generation: UUID) async {
         while !Task.isCancelled && automaticSyncGeneration == generation {
             do {
-                let api = try client(for: target)
-                guard let endpoint = try await api.notifyPushEndpoint(),
-                      let credential = try credentials.credential(accountID: target.id) else { return }
+                let api = try await client(for: target)
+                guard let endpoint = try await api.notifyPushEndpoint() else { return }
+                let credentialStore = credentials
+                guard let credential = try await Task.detached(operation: {
+                    try credentialStore.credential(accountID: target.id)
+                }).value else { return }
                 let sessions = NotifyPushSessions(client: api)
                 await withTaskGroup(of: Void.self) { group in
                     group.addTask {
@@ -820,13 +841,14 @@ final class AppModel {
         if syncActivity?.account.id == id { syncActivity = nil }
         let credentialStore = credentials
         try await store.removeAccount(accountID: id) { try credentialStore.remove(accountID: $0) }
+        invalidateClient(accountID: id)
         accounts.removeAll { $0.id == id }
         if let activity = syncActivity, activity.accountTotal > 1 {
             reportSyncProgress(activity.progress, account: activity.account, targets: accounts)
         }
         accountCollectives[id] = nil
         collectiveListingErrors[id] = nil
-        clients[id] = nil
+        invalidateClient(accountID: id)
         checkpointSnapshots[id] = nil; checkpointVersions[id] = nil
         syncBaselines[id] = nil
         syncIssues[id] = nil
@@ -846,7 +868,7 @@ final class AppModel {
         let saved = library
         guard let collectiveID = saved.collectiveID,
               snapshot.collectives.contains(where: { $0.id == collectiveID }) else { return }
-        if await openCollective(collectiveID), let pageID = saved.pageID {
+        if await openCollective(collectiveID, refresh: false), let pageID = saved.pageID {
             if let page = pages.first(where: { $0.id == pageID }) { await openPage(page) }
             else if snapshot.documents[String(pageID)]?.draft != nil { await openDraft(pageID) }
         }
@@ -895,7 +917,7 @@ final class AppModel {
         await finishTextEditing()
         await pendingPersistence?.value
         guard !persistenceFailed else { throw CollectivesError.invalidResponse }
-        let updated = try await client().setPageEmoji(pageID: page.id, collectiveID: collectiveID, emoji: emoji)
+        let updated = try await activeClient().setPageEmoji(pageID: page.id, collectiveID: collectiveID, emoji: emoji)
         var next = snapshot
         next.pages[String(collectiveID)] = (next.pages[String(collectiveID)] ?? []).map { $0.id == page.id ? updated : $0 }
         if var cached = next.documents[String(page.id)] { cached.page = updated; next.documents[String(page.id)] = cached }
@@ -911,7 +933,7 @@ final class AppModel {
         await pendingPersistence?.value
         guard !persistenceFailed else { throw PageCreationError.unsavedDraft }
         let result = try await PageCreator.create(title: title, parentID: parentID, collectiveID: collectiveID,
-            snapshot: snapshot, api: client())
+            snapshot: snapshot, api: activeClient())
         let previous = snapshot
         snapshot = result.snapshot
         selectedPage = result.page
@@ -936,7 +958,7 @@ final class AppModel {
         await pendingPersistence?.value
         guard !persistenceFailed else { throw PageRenamingError.unsavedDraft }
         let result = try await PageRenamer.rename(title: title, pageID: pageID, collectiveID: collectiveID,
-            snapshot: snapshot, api: client())
+            snapshot: snapshot, api: activeClient())
         snapshot = result.snapshot
         if let selected = selectedPage {
             selectedPage = pages.first(where: { $0.id == selected.id }) ?? snapshot.documents[String(selected.id)]?.page ?? selected
@@ -961,8 +983,11 @@ final class AppModel {
         try Task.checkCancellation()
         let existing = accounts.first { $0.serverURL == server && $0.userID == userID }
         let new = Account(id: existing?.id ?? UUID(), serverURL: server, userID: userID)
-        try credentials.save(credential, accountID: new.id)
-        clients[new.id] = nil
+        let credentialStore = credentials
+        try await Task.detached {
+            try credentialStore.save(credential, accountID: new.id)
+        }.value
+        invalidateClient(accountID: new.id)
         syncIssues[new.id] = nil
         if existing == nil { accounts.append(new) }
         try await store.saveAccounts(accounts)

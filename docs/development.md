@@ -179,3 +179,9 @@ Editor failures log bounded startup-stage and error-category diagnostics under t
 allowlisted bundle-source label and bounded line/column numbers. Markdown, arbitrary
 JavaScript exception messages, account data, and file paths are excluded. These
 diagnostics identify failures; they do not suppress or recover from them.
+
+Startup restores the cached account and selected note before attempting network
+refresh. Keychain reads and writes run away from the UI thread, and prepared API
+clients are reused per account. Reauthentication and account removal invalidate
+those clients. Restoring a rich-text note leaves server sync paused and does not
+wait for credentials.
