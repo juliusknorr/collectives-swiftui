@@ -26,6 +26,7 @@ with tempfile.TemporaryDirectory() as temporary:
     preload = staging / 'js/modulepreload-polyfill-CBWYtosv.chunk.mjs'
     code = preload.read_text()
     code = code.replace('c.map(r=>{', 'c.filter(r=>r.endsWith(".css")).map(r=>{')
+    code = code.replace('s.crossOrigin="",', '')
     preload.write_text(code)
     subprocess.run(['npx', '--yes', 'esbuild@0.25.12', str(staging / 'js/text-editor.mjs'),
                     '--bundle', '--format=iife', '--platform=browser', '--minify',
@@ -43,6 +44,6 @@ with tempfile.TemporaryDirectory() as temporary:
     'project': 'Nextcloud Text', 'version': '10.0.0-dev.0', 'revision': PIN,
     'source': f'https://github.com/nextcloud/text/tree/{PIN}',
     'license': 'AGPL-3.0-or-later', 'bundler': 'esbuild@0.25.12',
-    'adjustments': ['Fold dynamic imports into a classic IIFE', 'Preload CSS only',
+    'adjustments': ['Fold dynamic imports into a classic IIFE', 'Preload CSS only without a crossorigin attribute for local-file WebKit',
                     'Resolve import.meta.url against the local document']
 }, indent=2) + '\n')
