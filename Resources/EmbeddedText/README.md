@@ -31,7 +31,10 @@ Native code owns drafts, account selection, persistence, and conditional sync.
 
 The app warms one mounted editor at launch. Page changes use silent document
 replacement and fresh plugin state rather than recreating Vue/Tiptap. Closing a
-session clears its document and history while retaining the editor and assets. Inline
+session normally clears its document and history while retaining the editor and
+assets. Same-account page navigation instead freezes the old document and marks
+its DOM inert, keeping it visible until atomic replacement. Other transitions,
+including account switches, clear retained content even if no session is active. Inline
 View/Edit/Rich Text transitions flush updates before changing pages or accounts.
 
 The first session preserves the exact source in an optional per-account snapshot

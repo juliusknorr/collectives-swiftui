@@ -123,8 +123,10 @@ updates before navigating. The original-source recovery action remains in the
 The app prewarms one local WebKit runtime at launch and reuses its parsed modules
 and styles across pages. A small pinned Text embedding extension replaces the
 document in the mounted editor and resets its plugin state, selection and undo
-history. Closing a session clears its document. This avoids rebuilding Vue/Tiptap
-on every page switch. The web view stays mounted and visible; a loading indicator
+history. During a same-account page switch, the previous document stays visible
+but inert until the next document replaces it. Downloads keep the current page
+on screen until the new page is available. Mode/account changes clear retained
+content. This avoids blank frames and rebuilding Vue/Tiptap on every page switch. The web view stays mounted and visible; a loading indicator
 appears only after 180 ms to avoid flashing during fast transitions. View and Edit
 stay available during cold startup. Local offline WebKit checks measured about
 13–18 ms for a subsequent page; actual time depends on the device and document. Settings let you choose the
