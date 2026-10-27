@@ -1,4 +1,5 @@
 import SwiftUI
+import OSLog
 import CollectivesCore
 @preconcurrency import WebKit
 
@@ -47,17 +48,17 @@ final class OfflineTextRuntime: NSObject, WKScriptMessageHandler, WKNavigationDe
     private func launchIfReady() {
         guard ready, !launched, let session else { return }
         launched = true
-        webView?.callAsyncJavaScript("await window.startTextEditor(input)", arguments: ["input": [
+        webView?.callAsyncJavaScript("await window.startTextEditor(input); return null;", arguments: ["input": [
             "session": session.id.uuidString, "markdown": session.initialMarkdown
         ]], in: nil, in: .page) { result in
-            if case .failure = result, self.session?.id == session.id { self.fail() }
+            if case .failure(let error) = result, self.session?.id == session.id { self.fail("start \((error as NSError).domain):\((error as NSError).code)") }
         }
     }
 
     func finish(retainingContent: Bool = false) async {
         guard session != nil else {
             if !retainingContent && self.retainingContent {
-                _ = try? await webView?.callAsyncJavaScript("await window.finishTextEditor()", in: nil, contentWorld: .page)
+                _ = try? await webView?.callAsyncJavaScript("await window.finishTextEditor(); return null;", in: nil, contentWorld: .page)
                 self.retainingContent = false
             }
             return
@@ -74,14 +75,14 @@ final class OfflineTextRuntime: NSObject, WKScriptMessageHandler, WKNavigationDe
             finishTimeout = Task {
                 try? await Task.sleep(for: .seconds(8))
                 guard !Task.isCancelled, finishing else { return }
-                fail()
+                fail("finish timed out")
                 webView?.stopLoading()
             }
         }
     }
     private func sendFinish() {
-        webView?.callAsyncJavaScript("await window.finishTextEditor(options)", arguments: ["options": ["retainContent": retainOnFinish]], in: nil, in: .page) { result in
-            if case .failure = result { self.fail() }
+        webView?.callAsyncJavaScript("await window.finishTextEditor(options); return null;", arguments: ["options": ["retainContent": retainOnFinish]], in: nil, in: .page) { result in
+            if case .failure(let error) = result { self.fail("finish \((error as NSError).domain):\((error as NSError).code)") }
         }
     }
     private func clearSession(retained: Bool = false) {
@@ -91,7 +92,8 @@ final class OfflineTextRuntime: NSObject, WKScriptMessageHandler, WKNavigationDe
         let waiters = finishWaiters; finishWaiters = []
         waiters.forEach { $0.resume() }
     }
-    private func fail() {
+    private func fail(_ reason: String = "script or asset failure") {
+        Logger(subsystem: "org.nextcloud.collectives", category: "TextRuntime").error("Text runtime failure: \(reason, privacy: .public)")
         failed = true
         if finishing { clearSession() }
     }
@@ -103,11 +105,11 @@ final class OfflineTextRuntime: NSObject, WKScriptMessageHandler, WKNavigationDe
             ready = true; launchIfReady()
             if finishing { sendFinish() }
         case "warmed": warmed = true
-        case "error": fail()
+        case "error": fail("web script reported failure")
         default:
             guard let session, body["session"] as? String == session.id.uuidString else { return }
             switch type {
-            case "loaded": loaded = true; retainingContent = false
+            case "loaded": loaded = true; failed = false; retainingContent = false
             case "update":
                 guard let revision = body["revision"] as? Int, let markdown = body["markdown"] as? String else { return }
                 onUpdate?(revision, markdown)
@@ -119,9 +121,9 @@ final class OfflineTextRuntime: NSObject, WKScriptMessageHandler, WKNavigationDe
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
         navigationAction.request.url?.standardizedFileURL == indexURL ? .allow : .cancel
     }
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { fail() }
-    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { fail() }
-    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { fail() }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { fail("provisional navigation \((error as NSError).code)") }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { fail("navigation \((error as NSError).code)") }
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { fail("web process terminated") }
 }
 
 @MainActor
