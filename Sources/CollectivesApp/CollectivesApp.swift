@@ -21,6 +21,12 @@ enum AppSurface {
     }
 }
 
+private struct AutomaticSyncIdentity: Equatable {
+    let active: Bool
+    let accountID: UUID?
+    let collectiveIDs: [Int]
+}
+
 @main
 struct CollectivesApp: App {
     @State private var model = AppModel()
@@ -30,13 +36,13 @@ struct CollectivesApp: App {
         WindowGroup {
             ContentView(model: model)
                 .task { await model.start() }
-                .task(id: scenePhase) {
-                    guard scenePhase == .active else { return }
-                    while !Task.isCancelled {
-                        if automaticSync { await model.syncPending(automatic: true) }
-                        do { try await Task.sleep(for: .seconds(30)) }
-                        catch { return }
-                    }
+                .task(id: AutomaticSyncIdentity(
+                    active: scenePhase == .active && automaticSync && model.startupComplete,
+                    accountID: model.activeID,
+                    collectiveIDs: model.snapshot.collectives.map(\.id)
+                )) {
+                    guard scenePhase == .active, automaticSync, model.startupComplete else { return }
+                    await model.runAutomaticSync()
                 }
         }
         #if os(macOS)
@@ -47,7 +53,7 @@ struct CollectivesApp: App {
             CommandGroup(after: .newItem) {
                 Button("Sync Current Page") { Task { await model.sync() } }
                     .keyboardShortcut("s").disabled(model.busy || model.selectedPage == nil)
-                Button("Sync All Drafts") { Task { await model.syncPending() } }
+                Button("Sync All Accounts") { Task { await model.syncAccounts() } }
                     .keyboardShortcut("s", modifiers: [.command, .shift]).disabled(model.busy)
                 Toggle("Automatically Sync Active Account", isOn: $automaticSync)
             }
@@ -75,18 +81,30 @@ final class AppModel {
     var settingsLogin = false
     var loginServer = "https://"
     var started = false
+    var startupComplete = false
     var library = PageLibraryState()
     private let preferences: LibraryPreferences
     private let store: LocalStore
     private let credentials = KeychainCredentialStore()
+    private let makeClient: @MainActor (Account) throws -> CollectivesClient
+    private var pushConnected = false
+    private var remoteSyncRequested = false
+    private var automaticSyncGeneration: UUID?
     private var pendingPersistence: Task<Void, Never>?
     private var persistenceFailed = false
     private var lastEdit = Date.distantPast
 
-    init(store: LocalStore? = nil, preferences: LibraryPreferences = LibraryPreferences()) {
+    init(store: LocalStore? = nil, preferences: LibraryPreferences = LibraryPreferences(),
+         makeClient: (@MainActor (Account) throws -> CollectivesClient)? = nil) {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         self.store = store ?? LocalStore(root: base.appendingPathComponent("Collectives", isDirectory: true))
         self.preferences = preferences
+        self.makeClient = makeClient ?? { account in
+            guard let credential = try KeychainCredentialStore().credential(accountID: account.id) else {
+                throw CollectivesError.invalidResponse
+            }
+            return CollectivesClient(account: account, credential: credential)
+        }
     }
     var account: Account? { accounts.first { $0.id == activeID } }
     var pages: [Page] { snapshot.pages[String(selectedCollective ?? -1)] ?? [] }
@@ -98,6 +116,7 @@ final class AppModel {
 
     func start() async {
         guard !started else { return }; started = true
+        defer { startupComplete = true }
         do {
             accounts = try await store.accounts()
             for account in accounts {
@@ -106,16 +125,14 @@ final class AppModel {
             }
             if let target = accounts.first(where: { $0.id == preferences.lastAccountID }) ?? accounts.first {
                 await selectAccount(target.id)
+                await syncAccounts()
                 await restoreSelection()
-                await refresh(excludingActive: true)
             }
         } catch { message = error.localizedDescription }
     }
     func client() throws -> CollectivesClient {
-        guard let account, let credential = try credentials.credential(accountID: account.id) else {
-            throw CollectivesError.invalidResponse
-        }
-        return CollectivesClient(account: account, credential: credential)
+        guard let account else { throw CollectivesError.invalidResponse }
+        return try makeClient(account)
     }
     func selectAccount(_ id: UUID) async {
         guard !busy, accounts.contains(where: { $0.id == id }) else { return }
@@ -135,7 +152,8 @@ final class AppModel {
         library = preferences.load(accountID: id)
         preferences.lastAccountID = id
         do {
-            snapshot.collectives = try await client().collectives()
+            let remote = try await client().collectives()
+            snapshot.collectives = retainingUnsyncedCollectives(remote, in: snapshot)
             accountCollectives[id] = snapshot.collectives
             try await persist(); message = "Collectives refreshed."
             collectiveListingErrors[id] = nil
@@ -149,6 +167,14 @@ final class AppModel {
         guard let id = activeID else { return }
         try await store.saveSnapshot(snapshot, accountID: id)
     }
+    private func retainingUnsyncedCollectives(_ remote: [Collective], in local: AccountSnapshot) -> [Collective] {
+        let remoteIDs = Set(remote.map(\.id))
+        return remote + local.collectives.filter { collective in
+            !remoteIDs.contains(collective.id) && local.documents.values.contains {
+                $0.collectiveID == collective.id && ($0.draft != nil || $0.conflict != nil)
+            }
+        }
+    }
     func collectives(for accountID: UUID) -> [Collective] {
         accountID == activeID ? snapshot.collectives : accountCollectives[accountID] ?? []
     }
@@ -161,10 +187,8 @@ final class AppModel {
         for target in targets {
             do {
                 var local = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
-                guard let credential = try credentials.credential(accountID: target.id) else {
-                    throw CollectivesError.invalidResponse
-                }
-                local.collectives = try await CollectivesClient(account: target, credential: credential).collectives()
+                let remote = try await makeClient(target).collectives()
+                local.collectives = retainingUnsyncedCollectives(remote, in: local)
                 accountCollectives[target.id] = local.collectives
                 if target.id == activeID { snapshot = local }
                 try await store.saveSnapshot(local, accountID: target.id)
@@ -309,6 +333,144 @@ final class AppModel {
             message = "Download incomplete; saved pages remain offline. \(error.localizedDescription)"
         }
     }
+    @discardableResult
+    func syncAccounts(automatic: Bool = false) async -> Bool {
+        guard !busy, !showLogin, !settingsLogin else { return false }
+        if automatic && Date().timeIntervalSince(lastEdit) < 5 { return false }
+        busy = true; defer { busy = false }
+        await pendingPersistence?.value
+        guard !persistenceFailed else { return false }
+        let targets = automatic ? accounts.filter { $0.id == activeID } : accounts
+        var failures = 0
+        for target in targets {
+            if Task.isCancelled { return false }
+            do {
+                let local = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
+                let localStore = store
+                let result = try await AccountSynchronizer.synchronize(snapshot: local, api: makeClient(target)) { value in
+                    try await localStore.saveSnapshot(value, accountID: target.id)
+                }
+                accountCollectives[target.id] = result.snapshot.collectives
+                if target.id == activeID {
+                    snapshot = result.snapshot
+                    reconcileSelection()
+                }
+                failures += result.failures.count
+                collectiveListingErrors[target.id] = result.failures.first?.message
+            } catch {
+                // A failed request or cancellation may follow successful persisted pages.
+                if let saved = try? await store.snapshot(accountID: target.id) {
+                    accountCollectives[target.id] = saved.collectives
+                    if target.id == activeID { snapshot = saved; reconcileSelection() }
+                }
+                if Task.isCancelled { return false }
+                collectiveListingErrors[target.id] = error.localizedDescription
+                failures += 1
+            }
+        }
+        message = failures == 0 ? "Synced with server." :
+            "Sync incomplete; \(failures) items need retry. Cached pages and unsynced work are retained."
+        return true
+    }
+    private func reconcileSelection() {
+        if let selected = selectedPage {
+            selectedPage = snapshot.pages.values.joined().first { $0.id == selected.id }
+                ?? snapshot.documents[String(selected.id)]?.page
+            if selectedPage == nil { text = "" }
+        }
+        if let id = selectedCollective,
+           !snapshot.collectives.contains(where: { $0.id == id }),
+           selectedPage == nil { selectedCollective = nil }
+        updateEditor()
+    }
+    func runAutomaticSync() async {
+        guard let target = account else { return }
+        let generation = UUID()
+        automaticSyncGeneration = generation
+        pushConnected = false
+        defer {
+            if automaticSyncGeneration == generation {
+                automaticSyncGeneration = nil
+                pushConnected = false
+            }
+        }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.listenForChanges(account: target, generation: generation) }
+            var lastRefresh = Date.distantPast
+            var lastDraftSync = Date.distantPast
+            while !Task.isCancelled && automaticSyncGeneration == generation {
+                let now = Date()
+                let interval: TimeInterval = pushConnected ? 15 * 60 : 60
+                if remoteSyncRequested || now.timeIntervalSince(lastRefresh) >= interval {
+                    // Clear first so a push arriving during the request schedules another pass.
+                    remoteSyncRequested = false
+                    if await syncAccounts(automatic: true) { lastRefresh = now; lastDraftSync = now }
+                    else { remoteSyncRequested = true }
+                } else if now.timeIntervalSince(lastDraftSync) >= 30 {
+                    await syncPending(automatic: true)
+                    lastDraftSync = now
+                }
+                do { try await Task.sleep(for: .seconds(5)) }
+                catch { break }
+            }
+            group.cancelAll()
+        }
+    }
+    private func listenForChanges(account target: Account, generation: UUID) async {
+        while !Task.isCancelled && automaticSyncGeneration == generation {
+            do {
+                let api = try makeClient(target)
+                guard let endpoint = try await api.notifyPushEndpoint(),
+                      let credential = try credentials.credential(accountID: target.id) else { return }
+                let sessions = NotifyPushSessions(client: api)
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        do {
+                            try await NotifyPushListener.listen(endpoint: endpoint, account: target, credential: credential,
+                                onAuthenticated: {
+                                    await self.pushAuthenticated(sessions: sessions, generation: generation)
+                                }, onChange: {
+                                    await self.requestRemoteSync(generation: generation)
+                                })
+                        } catch { }
+                    }
+                    group.addTask { await self.maintainPushSessions(sessions, generation: generation) }
+                    await group.next()
+                    group.cancelAll()
+                }
+                if automaticSyncGeneration == generation { pushConnected = false }
+                await sessions.close()
+            } catch {
+                if automaticSyncGeneration == generation { pushConnected = false }
+            }
+            do { try await Task.sleep(for: .seconds(30)) }
+            catch { return }
+        }
+    }
+    private func requestRemoteSync(generation: UUID) {
+        if automaticSyncGeneration == generation { remoteSyncRequested = true }
+    }
+    private func pushAuthenticated(sessions: NotifyPushSessions, generation: UUID) async {
+        guard automaticSyncGeneration == generation else { return }
+        remoteSyncRequested = true
+        do {
+            try await sessions.refresh(collectiveIDs: snapshot.collectives.map(\.id))
+            if automaticSyncGeneration == generation { pushConnected = true }
+        } catch {
+            if automaticSyncGeneration == generation { pushConnected = false }
+        }
+    }
+    private func maintainPushSessions(_ sessions: NotifyPushSessions, generation: UUID) async {
+        while !Task.isCancelled && automaticSyncGeneration == generation {
+            do { try await Task.sleep(for: .seconds(60)) }
+            catch { return }
+            do { try await sessions.refresh(collectiveIDs: snapshot.collectives.map(\.id)) }
+            catch {
+                if automaticSyncGeneration == generation { pushConnected = false }
+                return
+            }
+        }
+    }
     func syncPending(automatic: Bool = false) async {
         guard !busy, !showLogin, !settingsLogin else { return }
         if automatic {
@@ -326,8 +488,7 @@ final class AppModel {
                 var local = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
                 let pending = local.documents.keys.sorted().filter { local.documents[$0]?.draft != nil }
                 guard !pending.isEmpty else { continue }
-                guard let credential = try credentials.credential(accountID: target.id) else { failures += 1; continue }
-                let api = CollectivesClient(account: target, credential: credential)
+                let api = try makeClient(target)
                 for key in pending {
                     try Task.checkCancellation()
                     guard let doc = local.documents[key] else { continue }
@@ -513,6 +674,7 @@ final class AppModel {
         try await store.saveAccounts(accounts)
         busy = false
         await selectAccount(new.id)
+        await syncAccounts(automatic: true)
     }
 }
 
@@ -933,7 +1095,7 @@ struct ContentView: View {
                 .font(.caption).foregroundStyle(.secondary)
             Spacer(minLength: 0)
             Menu {
-                Button("Sync All Accounts", systemImage: "arrow.triangle.2.circlepath") { Task { await model.syncPending() } }
+                Button("Sync All Accounts", systemImage: "arrow.triangle.2.circlepath") { Task { await model.syncAccounts() } }
                 Button("Refresh All Collectives", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
                 Divider()
                 Toggle("Auto-sync Active Account", isOn: $automaticSync)

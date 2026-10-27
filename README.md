@@ -109,12 +109,16 @@ Images load automatically only from the signed-in account's DAV files on its own
 
 1. Open a page online to download it, or choose **Download for Offline Editing** in the collective actions menu to download all page text in that collective.
 2. Disconnect, edit downloaded pages, and switch between accounts. Drafts persist across app restarts. The sidebar's **Drafts** list includes pending pages even when they are no longer present in the server page list.
-3. Reconnect and use **Sync** or **Sync All Accounts**. Foreground automatic sync retries the active account approximately every 30 seconds after at least five seconds without typing.
+3. Reconnect and use **Sync** or **Sync All Accounts**. Startup performs a full sync of every account, including collective lists, page lists, and page text. Foreground automatic sync refreshes the active account every minute and retries saved drafts approximately every 30 seconds after at least five seconds without typing.
 4. When the server page has changed, compare the retained draft with the server copy. **Queue Local Version** rebases the draft against the reviewed server revision; the next sync attempts a conditional save. **Use Server Version** discards the local draft in favor of that reviewed copy.
+
+When the server advertises a same-origin notify_push WebSocket endpoint, the app authenticates with the account’s app password and listens for file and Collectives page-list changes. Collective sessions are refreshed every minute to receive page-list notifications. Push changes trigger a refresh; a 15-minute safety poll catches missed events. Connection or session failures restore one-minute polling and trigger reconnection attempts. Push connections close when the app leaves the foreground, automatic sync is disabled, or the active account changes.
+
+Page downloads send the cached ETag in `If-None-Match`; HTTP 304 retains the local body without downloading it again. Pages without a cached revision need a full download. Startup sync runs even when ongoing automatic sync is disabled.
 
 Disable automatic sync before practicing manual sync scenarios. Network, authentication, and permission errors preserve local drafts. If the server provides no usable ETag, the app refuses to save unconditionally. Export source if server-side deletion or lost permissions prevent syncing.
 
-Collective downloads include page text only, with incremental checkpoints and resumable retries that preserve drafts. They do not prefetch attachments or images. Local search excludes undownloaded page bodies. Retry currently refreshes clean downloaded pages rather than using conditional downloads. Offline page creation, move/trash/restore, background scheduling, attachment management, and live collaborative editing are not implemented. Mac windows currently share navigation and editing state.
+Collective downloads include page text only, with incremental checkpoints and resumable retries that preserve drafts. They do not prefetch attachments or images. Local search excludes undownloaded page bodies. Retries use conditional downloads for clean cached pages. Offline page creation, move/trash/restore, background scheduling, attachment management, and live collaborative editing are not implemented. Mac windows currently share navigation and editing state.
 
 ## Validation
 

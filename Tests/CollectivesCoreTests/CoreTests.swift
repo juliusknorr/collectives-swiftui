@@ -15,6 +15,26 @@ private actor StubTransport: HTTPTransport {
 private let server = URL(string: "https://cloud.example.test/nextcloud")!
 private let page = Page(id: 42, title: "Notes", fileName: "Notes #1.md", filePath: "Projects", collectivePath: "Collectives/Team 📚")
 
+@Test func conditionalDownloadSendsETagAndHandlesUnchangedAndUpdatedContent() async throws {
+    let transport = StubTransport([(304, "", [:]), (200, "updated", ["ETag": "\"new\""])])
+    let client = CollectivesClient(account: Account(serverURL: server, userID: "alice"),
+        credential: Credential(loginName: "alice", appPassword: "secret"), transport: transport)
+    #expect(try await client.download(page: page, ifNoneMatch: "\"base\"") == nil)
+    let changed = try await client.download(page: page, ifNoneMatch: "\"base\"")
+    #expect(changed?.markdown == "updated")
+    #expect(changed?.etag == "\"new\"")
+    let requests = await transport.requests
+    #expect(requests.allSatisfy { $0.value(forHTTPHeaderField: "If-None-Match") == "\"base\"" })
+    #expect(requests.allSatisfy { $0.value(forHTTPHeaderField: "Accept-Encoding") == "identity" })
+}
+
+@Test func unconditionalDownloadRejectsUnexpectedNotModified() async throws {
+    let transport = StubTransport([(304, "", [:])])
+    let client = CollectivesClient(account: Account(serverURL: server, userID: "alice"),
+        credential: Credential(loginName: "alice", appPassword: "secret"), transport: transport)
+    await #expect(throws: CollectivesError.self) { try await client.download(page: page) }
+}
+
 @Test func serverValidationAndBoundaries() throws {
     #expect(try ServerAddress.normalize(URL(string: "http://localhost:8080/")!).absoluteString == "http://localhost:8080")
     #expect(throws: CollectivesError.self) { try ServerAddress.normalize(URL(string: "http://cloud.example.test")!) }

@@ -3,6 +3,13 @@ import Foundation
 public protocol CollectiveDownloadAPI: Sendable {
     func pages(collectiveID: Int) async throws -> [Page]
     func download(page: Page) async throws -> RemoteDocument
+    func download(page: Page, ifNoneMatch etag: String?) async throws -> RemoteDocument?
+}
+
+public extension CollectiveDownloadAPI {
+    func download(page: Page, ifNoneMatch etag: String?) async throws -> RemoteDocument? {
+        try await download(page: page)
+    }
 }
 
 extension CollectivesClient: CollectiveDownloadAPI {}
@@ -33,11 +40,12 @@ public enum OfflineDownloader {
             let key = String(page.id)
             let existing = updated.documents[key]
             if existing?.draft == nil && existing?.conflict == nil {
-                let remote = try await api.download(page: page)
-                updated.documents[key] = CachedDocument(
-                    page: page, collectiveID: collectiveID,
-                    markdown: remote.markdown, etag: remote.etag
-                )
+                if let remote = try await api.download(page: page, ifNoneMatch: existing?.etag) {
+                    updated.documents[key] = CachedDocument(
+                        page: page, collectiveID: collectiveID,
+                        markdown: remote.markdown, etag: remote.etag
+                    )
+                }
             }
             try await checkpoint(updated)
         }

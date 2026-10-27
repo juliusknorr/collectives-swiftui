@@ -126,7 +126,7 @@ public struct CollectivesClient: Sendable {
         request.setValue("Collectives Apple/0.1", forHTTPHeaderField: "User-Agent")
         return request
     }
-    private func ocs<T: Decodable>(_ type: T.Type, path: [String], method: String = "GET", body: Data? = nil) async throws -> T {
+    func ocs<T: Decodable>(_ type: T.Type, path: [String], method: String = "GET", body: Data? = nil) async throws -> T {
         var outgoing = try request(path)
         outgoing.httpMethod = method
         outgoing.httpBody = body
@@ -180,7 +180,14 @@ public struct CollectivesClient: Sendable {
         return result
     }
     public func download(page: Page) async throws -> RemoteDocument {
-        let (data, response) = try await transport.send(documentRequest(page: page))
+        guard let remote = try await download(page: page, ifNoneMatch: nil) else { throw CollectivesError.invalidResponse }
+        return remote
+    }
+    public func download(page: Page, ifNoneMatch etag: String?) async throws -> RemoteDocument? {
+        var request = try documentRequest(page: page)
+        if let etag, !etag.isEmpty { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
+        let (data, response) = try await transport.send(request)
+        if response.statusCode == 304, let etag, !etag.isEmpty { return nil }
         guard response.statusCode == 200 else { throw CollectivesError.http(response.statusCode) }
         guard let markdown = String(data: data, encoding: .utf8) else { throw CollectivesError.invalidResponse }
         return RemoteDocument(markdown: markdown, etag: response.value(forHTTPHeaderField: "ETag"))

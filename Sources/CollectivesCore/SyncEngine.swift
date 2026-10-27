@@ -2,7 +2,14 @@ import Foundation
 
 public protocol DocumentAPI: Sendable {
     func download(page: Page) async throws -> RemoteDocument
+    func download(page: Page, ifNoneMatch etag: String?) async throws -> RemoteDocument?
     func upload(page: Page, markdown: String, etag: String?) async throws -> String?
+}
+
+public extension DocumentAPI {
+    func download(page: Page, ifNoneMatch etag: String?) async throws -> RemoteDocument? {
+        try await download(page: page)
+    }
 }
 
 extension CollectivesClient: DocumentAPI {}
@@ -12,7 +19,7 @@ public enum DocumentSynchronizer {
         guard document.conflict == nil else { return document }
         var updated = document
         guard let draft = document.draft else {
-            let remote = try await api.download(page: document.page)
+            guard let remote = try await api.download(page: document.page, ifNoneMatch: document.etag) else { return updated }
             updated.markdown = remote.markdown
             updated.etag = remote.etag
             return updated

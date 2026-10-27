@@ -43,7 +43,7 @@ struct AppSettingsView: View {
             } header: {
                 Text("Sync")
             } footer: {
-                Text("Syncs saved drafts while the app is active. Conflicts stay on this device for review.")
+                Text("Refreshes pages while the app is active and syncs saved drafts after typing pauses. Uses server push when available. Conflicts stay on this device for review.")
             }
             Section {
                 if model.accounts.isEmpty {
