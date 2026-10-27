@@ -27,3 +27,12 @@ html, body { margin: 0; min-height: 100%; background: var(--color-main-backgroun
 #status { position: fixed; bottom: 8px; left: 16px; font-size: 13px }
 button, input { font: inherit }
 .ProseMirror { min-height: 60vh; outline: none }
+
+/* Paragraph spacing belongs between blocks, not above the first line of a row. */
+#editor .ProseMirror .task-item-content > :first-child,
+#editor .ProseMirror :is(td, th) p:first-child {
+ margin-block-start: 0;
+}
+#editor .ProseMirror :is(td, th) p:last-child {
+ margin-block-end: 0;
+}
