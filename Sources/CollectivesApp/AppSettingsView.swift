@@ -35,6 +35,9 @@ struct AppSettingsView: View {
                     }
                 }
                 Toggle("Remember last used page mode", isOn: $rememberPageMode)
+                #if os(macOS)
+                    .toggleStyle(.checkbox)
+                #endif
                 Toggle("Close sidebar after switching collective", isOn: $closeSidebarAfterCollectiveSwitch)
             } header: {
                 Text("Pages")
