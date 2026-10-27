@@ -49,7 +49,9 @@ final class Smoke: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                 window.webkit.messageHandlers.textEditor.postMessage({type:'editing',session:input.session});
                 if (document.querySelector('.ProseMirror').getAttribute('contenteditable') !== 'true') throw new Error('Editor is read-only after opening');
                 editor.insertAtCursor(' Offline edit 日本語');
-                await window.finishTextEditor();
+                const retainedHTML = editor.getHTML();
+                await window.finishTextEditor({retainContent:true});
+                if (editor.getHTML() !== retainedHTML || !document.getElementById('editor').inert) throw new Error('Retained page disappeared or accepted input');
                 if (document.querySelector('.ProseMirror').getAttribute('contenteditable') !== 'false') throw new Error('Closed editor remained editable');
                 return null;
                 """, arguments: ["input": ["session": session, "markdown": source]], in: nil, in: .page) { result in
@@ -72,6 +74,7 @@ final class Smoke: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                     const editor = await window.startTextEditor(input);
                     await new Promise(resolve => setTimeout(resolve, 25));
                     const html = editor.getHTML();
+                    if (html.includes('Offline edit')) throw new Error('Previous content leaked into the next page');
                     const state = editor.resetMarkdownContent(input.markdown, true);
                     if (!state.editable || document.querySelector('.ProseMirror').getAttribute('contenteditable') !== 'true') throw new Error('Reused editor is read-only');
                     if (state.canUndo || state.canRedo) throw new Error('Previous page undo/redo history leaked');
@@ -84,7 +87,7 @@ final class Smoke: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
             } else {
                 guard loaded, edits.isEmpty else { fail("Page reuse rewrote source or leaked prior edits") }
                 timeout?.invalidate()
-                print("PASS: Offline Text cold/warm startup, rich Unicode edit, Markdown serialization, and mounted-editor reuse without rewriting source or leaking undo/redo history.")
+                print("PASS: Offline Text cold/warm startup, rich Unicode edit, Markdown serialization, and retained-content page handoff, blocked stale input, and clean next-page source/history.")
                 exit(0)
             }
         case "error": fail("Offline editor reported a runtime failure")

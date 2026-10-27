@@ -290,35 +290,38 @@ final class AppModel {
     func openPage(_ page: Page) async {
         guard !busy else { return }
         busy = true; defer { busy = false; resumeTextEditing() }
-        await finishTextEditing()
+        await finishTextEditing(retainingContent: pageMode == .richText)
         await pendingPersistence?.value
         guard !persistenceFailed else { message = "Save the current draft before switching pages."; return }
         await loadPage(page)
     }
     private func loadPage(_ page: Page) async {
+        let key = String(page.id)
+        if snapshot.documents[key] == nil {
+            message = "Downloading the next page…"
+            do {
+                let body = try await client().download(page: page)
+                snapshot.documents[key] = CachedDocument(page: page, collectiveID: selectedCollective!, markdown: body.markdown, etag: body.etag)
+                try await persist()
+            } catch {
+                message = "Could not open the next page. \(error.localizedDescription)"
+                return
+            }
+        }
+        guard let cached = snapshot.documents[key] else { return }
         selectedPage = page
-        pageMode = modePreferences.modeForPage(canEdit: canEdit, hasConflict: snapshot.documents[String(page.id)]?.conflict != nil)
+        pageMode = modePreferences.modeForPage(canEdit: canEdit, hasConflict: cached.conflict != nil)
         if let collectiveID = selectedCollective {
             library.visit(pageID: page.id, collectiveID: collectiveID); saveLibrary()
         }
-        let key = String(page.id)
-        if let cached = snapshot.documents[key] {
-            text = cached.draft ?? cached.markdown
-            message = cached.conflict != nil ? "Conflict: local draft preserved. Choose Review Changes to compare versions." :
-                (cached.draft != nil ? "Local draft waiting to sync." : "Downloaded page. Refresh from server to check for updates.")
-            return
-        }
-        text = ""
-        do {
-            let body = try await client().download(page: page)
-            snapshot.documents[key] = CachedDocument(page: page, collectiveID: selectedCollective!, markdown: body.markdown, etag: body.etag)
-            try await persist(); text = body.markdown; message = "Downloaded for offline editing."
-        } catch { message = error.localizedDescription }
+        text = cached.draft ?? cached.markdown
+        message = cached.conflict != nil ? "Conflict: local draft preserved. Choose Review Changes to compare versions." :
+            (cached.draft != nil ? "Local draft waiting to sync." : "Downloaded page. Refresh from server to check for updates.")
     }
     func openDraft(_ pageID: Int) async {
         guard !busy else { return }
         busy = true; defer { busy = false; resumeTextEditing() }
-        await finishTextEditing()
+        await finishTextEditing(retainingContent: pageMode == .richText)
         await pendingPersistence?.value
         guard !persistenceFailed, let doc = snapshot.documents[String(pageID)] else { return }
         selectedCollective = doc.collectiveID
@@ -399,9 +402,9 @@ final class AppModel {
         textSession = session
         saveEdited(markdown, page: page, document: document)
     }
-    func finishTextEditing() async {
+    func finishTextEditing(retainingContent: Bool = false) async {
+        await textRuntime.finish(retainingContent: retainingContent)
         guard textSession != nil else { return }
-        await textRuntime.finish()
         await pendingPersistence?.value
         textSession = nil
     }
@@ -860,7 +863,7 @@ final class AppModel {
     func openQuickSearchResult(_ result: PageQuickSearchResult, accountID: UUID) async -> Bool {
         guard !busy, activeID == accountID else { return false }
         busy = true; defer { busy = false; resumeTextEditing() }
-        await finishTextEditing()
+        await finishTextEditing(retainingContent: pageMode == .richText)
         await pendingPersistence?.value
         guard !persistenceFailed else {
             message = "Save the current draft before switching pages."

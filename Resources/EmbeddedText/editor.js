@@ -36,14 +36,17 @@
         // Settle plugin/view updates before binding the native draft callback.
         await Promise.resolve();
         session = input.session;
+        document.getElementById('editor').inert = false;
         post({ type: 'loaded', session });
         return instance;
     });
-    window.finishTextEditor = () => enqueue(() => {
+    window.finishTextEditor = ({ retainContent = false } = {}) => enqueue(() => {
         const finished = session;
         session = undefined;
-        instance?.resetMarkdownContent('', false);
-        post({ type: 'finished', session: finished });
+        document.getElementById('editor').inert = true;
+        if (retainContent) instance?.freezeMarkdownContent();
+        else instance?.resetMarkdownContent('', false);
+        post({ type: 'finished', session: finished, retained: retainContent });
     });
     enqueue(async () => {
         // This host only renders the editing UI; disable input directly while idle.

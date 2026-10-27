@@ -32,7 +32,8 @@ with tempfile.TemporaryDirectory() as temporary:
     # Tiptap remounting, suppress initial updates and reset all plugin history.
     entry = staging / 'js/text-editor.mjs'
     original = 'setContent(e){return this.#n.content=e,this.#t.setContent?.(e),this}'
-    reset = """resetMarkdownContent(e,editable=false){
+    reset = """freezeMarkdownContent(){this.#t.editor.setEditable(false,false)}
+    resetMarkdownContent(e,editable=false){
         this.#t.setContent(e,{addToHistory:false});
         const n=this.#t.editor;
         n.view.updateState(n.state.constructor.create({schema:n.schema,doc:n.state.doc,plugins:n.state.plugins}));
@@ -64,5 +65,6 @@ with tempfile.TemporaryDirectory() as temporary:
     'license': 'AGPL-3.0-or-later', 'bundler': 'esbuild@0.25.12',
     'adjustments': ['Fold dynamic imports into a classic IIFE', 'Preload CSS only without a crossorigin attribute for local-file WebKit',
                     'Resolve import.meta.url against the local document',
-                    'Add resetMarkdownContent for silent document replacement with fresh plugin state']
+                    'Add resetMarkdownContent for silent document replacement with fresh plugin state',
+                    'Add freezeMarkdownContent for inert retained-content page handoff']
 }, indent=2) + '\n')

@@ -6,6 +6,7 @@ import CollectivesCore
 @MainActor @Observable
 final class OfflineTextRuntime: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     private(set) var loaded = false
+    private(set) var retainingContent = false
     private(set) var failed = false
     private(set) var warmed = false
     @ObservationIgnored private(set) var webView: WKWebView?
@@ -15,6 +16,7 @@ final class OfflineTextRuntime: NSObject, WKScriptMessageHandler, WKNavigationDe
     @ObservationIgnored private var onUpdate: ((Int, String) -> Void)?
     @ObservationIgnored private var launched = false
     @ObservationIgnored private var finishing = false
+    @ObservationIgnored private var retainOnFinish = false
     @ObservationIgnored private var finishWaiters: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var finishTimeout: Task<Void, Never>?
 
@@ -31,7 +33,7 @@ final class OfflineTextRuntime: NSObject, WKScriptMessageHandler, WKNavigationDe
     private func loadAssets() {
         guard let root = Bundle.main.resourceURL?.appendingPathComponent("EmbeddedText"),
               FileManager.default.fileExists(atPath: root.appendingPathComponent("index.html").path) else { fail(); return }
-        ready = false; loaded = false; warmed = false; failed = false; launched = false
+        ready = false; loaded = false; retainingContent = false; warmed = false; failed = false; launched = false
         indexURL = root.appendingPathComponent("index.html").standardizedFileURL
         webView?.loadFileURL(root.appendingPathComponent("index.html"), allowingReadAccessTo: root)
     }
@@ -52,13 +54,20 @@ final class OfflineTextRuntime: NSObject, WKScriptMessageHandler, WKNavigationDe
         }
     }
 
-    func finish() async {
-        guard session != nil else { return }
+    func finish(retainingContent: Bool = false) async {
+        guard session != nil else {
+            if !retainingContent && self.retainingContent {
+                _ = try? await webView?.callAsyncJavaScript("await window.finishTextEditor()", in: nil, contentWorld: .page)
+                self.retainingContent = false
+            }
+            return
+        }
         if failed { clearSession(); return }
         await withCheckedContinuation { continuation in
             finishWaiters.append(continuation)
             guard !finishing else { return }
             finishing = true
+            retainOnFinish = retainingContent
             // A page can be switched before scripts finish loading. Once ready,
             // launchIfReady queues start before finish through the JS operation queue.
             if ready { sendFinish() }
@@ -71,11 +80,12 @@ final class OfflineTextRuntime: NSObject, WKScriptMessageHandler, WKNavigationDe
         }
     }
     private func sendFinish() {
-        webView?.evaluateJavaScript("void window.finishTextEditor()") { _, error in
-            if error != nil { self.fail() }
+        webView?.callAsyncJavaScript("await window.finishTextEditor(options)", arguments: ["options": ["retainContent": retainOnFinish]], in: nil, in: .page) { result in
+            if case .failure = result { self.fail() }
         }
     }
-    private func clearSession() {
+    private func clearSession(retained: Bool = false) {
+        retainingContent = retained
         finishTimeout?.cancel(); finishTimeout = nil
         session = nil; onUpdate = nil; loaded = false; finishing = false
         let waiters = finishWaiters; finishWaiters = []
@@ -97,11 +107,11 @@ final class OfflineTextRuntime: NSObject, WKScriptMessageHandler, WKNavigationDe
         default:
             guard let session, body["session"] as? String == session.id.uuidString else { return }
             switch type {
-            case "loaded": loaded = true
+            case "loaded": loaded = true; retainingContent = false
             case "update":
                 guard let revision = body["revision"] as? Int, let markdown = body["markdown"] as? String else { return }
                 onUpdate?(revision, markdown)
-            case "finished": clearSession()
+            case "finished": clearSession(retained: body["retained"] as? Bool == true)
             default: break
             }
         }
@@ -133,7 +143,7 @@ struct OfflineTextPage: View {
                     ContentUnavailableView("Rich Text Unavailable", systemImage: "exclamationmark.triangle",
                         description: Text("Switch to View or Edit. Saved edits and the original source are retained."))
                 } else if !runtime.loaded && showProgress {
-                    ProgressView("Preparing rich text…")
+                    ProgressView(runtime.retainingContent ? "Switching page…" : "Preparing rich text…")
                 }
             }
         }
