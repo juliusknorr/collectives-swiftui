@@ -19,6 +19,7 @@ struct SyncIssue {
 
 struct SyncStatusView: View {
     @Bindable var model: AppModel
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         if let id = model.activeID, let issue = model.syncIssues[id] {
@@ -30,20 +31,20 @@ struct SyncStatusView: View {
                      ? "Your downloaded pages and local changes are still on this device. Sign in again to reconnect this account."
                      : "Your downloaded pages and local changes are still on this device. Try syncing again. If it still fails, review the details below.")
                     .font(.callout).foregroundStyle(.secondary)
-                DisclosureGroup("Details") {
-                    Text(issue.message).font(.caption).textSelection(.enabled)
-                }
+                Text(issue.message).font(.caption).textSelection(.enabled)
                 HStack {
                     Button(issue.requiresSignIn ? "Sign In Again…" : "Retry Sync") {
-                        if issue.requiresSignIn { model.beginLogin(server: model.account?.serverURL) }
+                        if issue.requiresSignIn {
+                            dismiss()
+                            model.beginLogin(server: model.account?.serverURL)
+                        }
                         else { Task { await model.syncAccounts() } }
                     }
                     .disabled(model.busy || model.syncing)
                     if model.syncing { ProgressView().controlSize(.small); Text("Syncing…").font(.caption) }
                 }
             }
-            .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+            .padding(16).frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .contain)
         }
     }

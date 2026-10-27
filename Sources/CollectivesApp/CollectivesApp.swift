@@ -75,7 +75,7 @@ final class AppModel {
     var selectedCollective: Int?
     var selectedPage: Page?
     var text = ""
-    var message = "Add an account to get started."
+    var message = ""
     var busy = false
     var syncing = false
     var syncIssues: [UUID: SyncIssue] = [:]
@@ -151,6 +151,8 @@ final class AppModel {
                 await selectAccount(target.id)
                 await syncAccounts()
                 await restoreSelection()
+            } else {
+                message = "Add an account to get started."
             }
         } catch { message = error.localizedDescription }
     }
@@ -195,7 +197,7 @@ final class AppModel {
         } catch {
             collectiveListingErrors[id] = error.localizedDescription
             syncIssues[id] = SyncIssue(error: error)
-            message = "Using cached content. \(error.localizedDescription)"
+            message = "Using cached content."
         }
         return true
     }
@@ -261,7 +263,7 @@ final class AppModel {
             try await persist(); message = "Select a page."
         } catch {
             if let id = activeID { syncIssues[id] = SyncIssue(error: error) }
-            message = "Using cached pages. \(error.localizedDescription)"
+            message = "Using cached pages."
         }
     }
     func openPage(_ page: Page) async {
@@ -744,6 +746,7 @@ struct ContentView: View {
     @AppStorage("closeSidebarAfterCollectiveSwitch") private var closeSidebarAfterCollectiveSwitch = false
     @State private var showCommandPalette = false
     @State private var showSettings = false
+    @State private var showSyncIssue = false
     @State private var newPageRequest: NewPageRequest?
     @State private var renamePageRequest: RenamePageRequest?
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
@@ -933,7 +936,6 @@ struct ContentView: View {
             } else {
                 ContentUnavailableView("Select a Page", systemImage: "doc.text", description: Text("Choose a page to read, or download this collective for offline editing."))
             }
-            SyncStatusView(model: model)
             if model.busy { ProgressView() }
             Text(model.message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1086,8 +1088,25 @@ struct ContentView: View {
         List(selection: collectiveSelection) {
             ForEach(model.accounts) { account in
                 Section {
+                    HStack(spacing: 6) {
+                        Label(account.userID, systemImage: "person.crop.circle")
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        if let error = model.collectiveListingErrors[account.id] {
+                            Image(systemName: "exclamationmark.icloud")
+                                .help("Could not refresh collectives: \(error)")
+                                .accessibilityLabel("Could not refresh collectives: \(error)")
+                        }
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                    .help(account.serverURL.absoluteString)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityValue(account.serverURL.absoluteString)
                     NavigationLink(value: SidebarDestination(accountID: account.id, collectiveID: nil)) {
-                        Label("Home", systemImage: "house")
+                        HStack(spacing: 9) {
+                            Image(systemName: "house").foregroundStyle(.secondary).frame(width: 20)
+                            Text("Home").lineLimit(1)
+                        }
                     }.disabled(model.busy)
                     ForEach(model.collectives(for: account.id)) { collective in
                         NavigationLink(value: SidebarDestination(accountID: account.id, collectiveID: collective.id)) {
@@ -1122,35 +1141,43 @@ struct ContentView: View {
                             .buttonStyle(.plain).disabled(model.busy)
                         }
                     }
-                } header: {
-                    HStack(alignment: .top, spacing: 6) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(account.userID).font(.headline)
-                            Text(account.serverURL.absoluteString).font(.caption).lineLimit(1)
-                        }
-                        Spacer(minLength: 0)
-                        if let error = model.collectiveListingErrors[account.id] {
-                            Image(systemName: "exclamationmark.icloud")
-                                .help("Could not refresh collectives: \(error)")
-                                .accessibilityLabel("Could not refresh collectives: \(error)")
-                        }
-                    }
-                    .textCase(nil)
-                    .accessibilityElement(children: .combine)
                 }
             }
-            Button("Add Account…", systemImage: "person.badge.plus") { model.beginLogin() }
-                .disabled(model.busy)
+            Button { model.beginLogin() } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "person.badge.plus").frame(width: 20)
+                    Text("Add Account…").lineLimit(1)
+                }
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).disabled(model.busy)
         }
+        .font(.body)
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
     }
     private var sidebarFooter: some View {
         HStack(spacing: 8) {
-            if model.busy || model.syncing { ProgressView().controlSize(.small) }
-            else { Image(systemName: model.syncSymbol).foregroundStyle(.secondary) }
-            Text(model.syncSummary)
-                .font(.caption).foregroundStyle(.secondary)
+            if let id = model.activeID, model.syncIssues[id] != nil {
+                Button { showSyncIssue.toggle() } label: {
+                    Label(model.syncSummary, systemImage: model.syncSymbol)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Show sync error details")
+                .popover(isPresented: $showSyncIssue, arrowEdge: .bottom) {
+                    SyncStatusView(model: model).frame(width: 320)
+                }
+                .onChange(of: model.activeID) { _, _ in showSyncIssue = false }
+                .onDisappear { showSyncIssue = false }
+            } else {
+                if model.busy || model.syncing { ProgressView().controlSize(.small) }
+                else { Image(systemName: model.syncSymbol).foregroundStyle(.secondary) }
+                Text(model.syncSummary)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Spacer(minLength: 0)
             Menu {
                 Button("Sync All Accounts", systemImage: "arrow.triangle.2.circlepath") { Task { await model.syncAccounts() } }

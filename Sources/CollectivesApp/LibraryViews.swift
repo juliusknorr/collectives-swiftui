@@ -105,7 +105,10 @@ private struct PageEmojiPicker: View {
 struct LibraryHomeView: View {
     @Bindable var model: AppModel
     var body: some View {
-        if model.account == nil {
+        if !model.startupComplete {
+            ProgressView("Loading library…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if model.account == nil {
             ContentUnavailableView {
                 Label("Welcome to Collectives", systemImage: "books.vertical")
             } description: {
