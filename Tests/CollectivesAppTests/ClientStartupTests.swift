@@ -64,7 +64,12 @@ private struct OfflineStartupTransport: HTTPTransport {
     #expect(model.selectedPage?.id == page.id)
     #expect(model.text == "Cached content")
     #expect(!model.startupComplete)
-    await gate.resume()
+    let release = Task {
+        await Task.yield()
+        await gate.resume()
+    }
+    await model.prepareReadingClient()
+    await release.value
     await startup.value
     #expect(model.startupComplete)
     await model.refresh()
@@ -83,6 +88,8 @@ private struct OfflineStartupTransport: HTTPTransport {
     #expect(richModel.textSession?.initialMarkdown == "Cached content")
     #expect(await gate.calls == 1)
     #expect(try await store.snapshot(accountID: account.id).textSourceBackups?["70"] == "Cached content")
+    await richModel.prepareReadingClient()
+    #expect(await gate.calls == 2)
     await richModel.changePageMode(.edit)
     await richModel.sync()
     #expect(await gate.calls == 2)

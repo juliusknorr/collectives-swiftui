@@ -97,7 +97,12 @@ final class AppModel {
     private let store: LocalStore
     private let credentials = KeychainCredentialStore()
     private let makeClient: @MainActor (Account) async throws -> CollectivesClient
+    private struct ClientPreparation {
+        let id = UUID()
+        let task: Task<CollectivesClient, Error>
+    }
     private var cachedClients: [Account: CollectivesClient] = [:]
+    private var preparingClients: [Account: ClientPreparation] = [:]
     private var clientGeneration = UUID()
     private var accountSyncTasks: [UUID: Task<Void, Error>] = [:]
     private var removingAccountIDs: Set<UUID> = []
@@ -185,17 +190,30 @@ final class AppModel {
         guard let account else { throw CollectivesError.invalidResponse }
         return try await client(for: account)
     }
+    func prepareReadingClient() async {
+        _ = try? await activeClient()
+    }
     private func client(for account: Account) async throws -> CollectivesClient {
         guard canSyncAccount(account.id) else { throw CancellationError() }
         if let client = cachedClients[account] { return client }
         let generation = clientGeneration
-        let client = try await makeClient(account)
+        let preparation = preparingClients[account] ?? ClientPreparation(task: Task { @MainActor [makeClient] in
+            try await makeClient(account)
+        })
+        preparingClients[account] = preparation
+        defer {
+            if preparingClients[account]?.id == preparation.id { preparingClients[account] = nil }
+        }
+        let client = try await preparation.task.value
         guard clientGeneration == generation, canSyncAccount(account.id), accounts.contains(account) else { throw CancellationError() }
         cachedClients[account] = client
         return client
     }
     private func invalidateClient(accountID: UUID) {
         cachedClients = cachedClients.filter { $0.key.id != accountID }
+        for account in preparingClients.keys.filter({ $0.id == accountID }) {
+            preparingClients.removeValue(forKey: account)?.task.cancel()
+        }
         clientGeneration = UUID()
     }
     func selectAccount(_ id: UUID, refresh: Bool = true) async {
@@ -1197,6 +1215,7 @@ struct ContentView: View {
                             Task { await model.openPage(destination) }
                         }
                         .id("\(model.activeID?.uuidString ?? "")/\(page.id)")
+                        .task(id: model.activeID) { await model.prepareReadingClient() }
                 }
                 if model.document?.conflict != nil {
                     HStack {

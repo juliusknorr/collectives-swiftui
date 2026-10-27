@@ -185,3 +185,8 @@ refresh. Keychain reads and writes run away from the UI thread, and prepared API
 clients are reused per account. Reauthentication and account removal invalidate
 those clients. Restoring a rich-text note leaves server sync paused and does not
 wait for credentials.
+
+Preview prepares its authenticated client in the background so image and link
+resolution resumes when credentials become available. Concurrent preview and sync
+requests share one in-flight client preparation rather than repeating Keychain
+lookups. Failed preparation is cleared so a later action can retry.
