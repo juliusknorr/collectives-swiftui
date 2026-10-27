@@ -53,6 +53,7 @@ public struct AccountSnapshot: Codable, Sendable {
     public var collectives: [Collective] = []
     public var pages: [String: [Page]] = [:]
     public var documents: [String: CachedDocument] = [:]
+    public var textSourceBackups: [String: String]?
     public init() {}
 }
 public extension CachedDocument {
