@@ -12,7 +12,7 @@ After approving a browser sign-in, return to Collectives to finish connecting. P
 
 The sidebar gear opens **Settings**, also available through **Collectives > Settings…** on Mac. Settings include:
 
-- Default page mode: **Preview** or **Edit Markdown**. The preference applies when opening another page; changing modes for the current page does not change the default. Read-only pages remain in Preview.
+- Default page mode: **View**, **Edit**, or **Rich Text**. Enable **Remember last used page mode** to reuse the last selected mode across pages and restarts. With it off, opening a page uses the selected default. Read-only pages open in View; conflicts fall back from Rich Text to Edit.
 - Automatically close the collective sidebar after switching collectives, keeping the page list available on larger screens.
 - Foreground automatic sync for the active account.
 - Add accounts, sign in again through Login Flow v2, export account source backups, and remove accounts from this device.
@@ -31,9 +31,9 @@ Use **Rename…** in a page's context menu, or **Rename Page…** in the collect
 
 ## Reading and editing
 
-Pages open in **Preview** by default. Choose **Edit** for native Markdown source editing. Formatting controls work with the selected text and provide keyboard shortcuts. Switching modes preserves the source and any draft; the rendered view never rewrites Markdown. The reader provides a headings outline and find-in-page controls for longer documents.
+Pages open in **View** by default. Choose **Edit** for native Markdown source editing or **Rich Text** for the experimental embedded Nextcloud Text editor. Formatting controls work with the selected text and provide keyboard shortcuts. Switching modes preserves the source and any draft; the rendered view never rewrites Markdown. The reader provides a headings outline and find-in-page controls for longer documents.
 
-The reader uses Swift Markdown 0.6.0 for CommonMark/GFM parsing and native SwiftUI views for headings, inline formatting, nested/task lists, tables, quotes, and code blocks. Tables and code blocks scroll horizontally; code blocks include a copy action. Task boxes in Preview are indicators; edit their source to change them. Known relative Markdown links open pages in the current collective, and heading anchors navigate within the page. Other supported web links open in the browser. Raw HTML is displayed as inert source; specialized Collectives extensions are not fully supported.
+The reader uses Swift Markdown 0.6.0 for CommonMark/GFM parsing and native SwiftUI views for headings, inline formatting, nested/task lists, tables, quotes, and code blocks. Tables and code blocks scroll horizontally; code blocks include a copy action. Task boxes in View are indicators; edit their source to change them. Known relative Markdown links open pages in the current collective, and heading anchors navigate within the page. Other supported web links open in the browser. Raw HTML is displayed as inert source; specialized Collectives extensions are not fully supported.
 
 Images load automatically only from the signed-in account's DAV files on its own Nextcloud server. Viewed raster images are cached per account for offline reading. External images require an explicit Open action. SVG and other unsupported image formats show a placeholder with an Open action. Individual raster responses are limited to 12 MiB after download, and displayed images are downsampled to 2048 pixels. Cache eviction and streaming response limits remain follow-up work.
 

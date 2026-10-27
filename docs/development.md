@@ -113,10 +113,20 @@ Dependency versions are recorded in `Package.resolved`; bundled notices live in 
 
 The `poc/nextcloud-text` branch embeds a pinned Nextcloud Text build in a local
 WKWebView on Mac and iOS. Build normally with `make run`, select a downloaded,
-editable page, then use the **Text** toolbar menu and choose **Open Offline Text
-(Experimental)…**. It runs without a web server or network connection. Text
-edits save into the same local Markdown drafts as source editing. Native sync
-pauses while the editor is open and resumes after **Done**.
+editable page, then select **Rich Text** beside **View / Edit** in the page toolbar.
+It runs inline without a web server or network connection. Text edits save into
+the same local Markdown drafts as source editing. Native sync pauses in Rich Text;
+switch to View or Edit to resume. Page/account changes flush and persist editor
+updates before navigating. The original-source recovery action remains in the
+**Aa** menu.
+
+The app prewarms one local WebKit runtime at launch and reuses its parsed modules
+and styles across pages. Each page gets a fresh editor with its own undo history;
+closing a session destroys its document state. A native loading indicator covers
+cold startup, while View and Edit stay available. In a local offline WebKit smoke,
+prewarming took about one second and opening a second page took 26 ms; actual
+startup time depends on the device and document. Settings let you choose the
+default mode or remember your most recently selected mode.
 
 Rich edits can normalize Markdown and discard unsupported syntax. Before the
 first Text session on a page, the app saves the exact source in the account's
@@ -142,7 +152,9 @@ xcrun swift scripts/test-embedded-text-webkit.swift Resources/EmbeddedText
 
 The WebKit smoke uses a synthetic document, loads the actual bundled editor from
 `file://`, verifies no initial source rewrite, and checks that a Unicode edit
-serializes back to Markdown. It does not contact Nextcloud or modify pages.
+serializes back to Markdown. It also measures startup and verifies a second page
+opens in the same runtime without rewriting source or leaking edits. It does not
+contact Nextcloud or modify pages.
 iOS device and App Store sandbox validation remain separate checks.
 
 The next experiment is collaboration through Text's existing Yjs provider and

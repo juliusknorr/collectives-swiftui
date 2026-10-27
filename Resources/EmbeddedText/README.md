@@ -22,6 +22,10 @@ The web runtime receives Markdown and an opaque editor session UUID. It gets no
 server URL, account identifier, credentials, cookies, or native file paths.
 Native code owns drafts, account selection, persistence, and conditional sync.
 
+The app warms a reusable runtime at launch. Each page session destroys the prior
+document and undo history while retaining loaded modules and styles. Inline
+View/Edit/Rich Text transitions flush updates before changing pages or accounts.
+
 The first session preserves the exact source in an optional per-account snapshot
 backup. The Text menu can restore it. Opening and closing without editing must
 not normalize source or create a draft. Rich edits may reserialize the entire
