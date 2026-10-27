@@ -310,7 +310,7 @@ final class AppModel {
         doc.draft = value == doc.markdown ? nil : value
         snapshot.documents[String(page.id)] = doc
         guard let id = activeID else { return }
-        let saved = snapshot
+        let saved = doc
         let generation = UUID()
         editGeneration = generation; savingDraft = true
         let previous = pendingPersistence
@@ -318,7 +318,7 @@ final class AppModel {
         pendingPersistence = Task {
             await previous?.value
             do {
-                try await store.saveSnapshot(saved, accountID: id)
+                try await store.saveDocument(saved, accountID: id)
                 persistenceFailed = false
                 if editGeneration == generation { savingDraft = false }
                 if activeID == id && editGeneration == generation { message = "Draft saved locally; waiting to sync." }

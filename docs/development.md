@@ -51,6 +51,21 @@ COLLECTIVES_SIGNING_IDENTITY="<certificate SHA-1 or exact name>" make build
 
 An explicitly selected identity overrides the local setup and becomes part of the build fingerprint. The helper refuses to silently fall back if a configured local identity is incomplete.
 
+## Local document storage
+
+Each account has a versioned manifest, separate page metadata, and one immutable
+JSON file per cached document. A document keeps its Markdown base, ETag, draft,
+and server conflict copy together. Edits write only that document and atomically
+replace the manifest; sync checkpoints reuse unchanged files. Unreferenced files
+from interrupted saves are cleaned up when the account next loads.
+
+Old `<account UUID>.json` snapshots migrate automatically on first load and remain
+as recovery backups. Once a manifest exists, invalid or unreadable active files
+produce an error rather than falling back to stale backup content. Removing an
+account deletes both formats, after checking for unsynced work. Older app builds
+do not understand the new layout and would read the stale backup; do not use them
+to edit a migrated library. Use one `LocalStore` actor per storage root.
+
 ## Local Nextcloud test server
 
 Docker Compose v2 and Python 3 are required:

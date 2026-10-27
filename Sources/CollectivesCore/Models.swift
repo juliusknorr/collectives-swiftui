@@ -37,7 +37,7 @@ public struct RemoteDocument: Codable, Equatable, Sendable {
     public let etag: String?
     public init(markdown: String, etag: String?) { self.markdown = markdown; self.etag = etag }
 }
-public struct CachedDocument: Codable, Sendable {
+public struct CachedDocument: Codable, Equatable, Sendable {
     public var page: Page
     public var collectiveID: Int
     public var markdown: String
