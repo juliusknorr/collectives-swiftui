@@ -606,21 +606,16 @@ final class AppModel {
             do {
                 try await performAccountSync(target.id) { [self] in
                     let base = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
-                    var remote = base
-                    let api = try client(for: target)
-                    let drafts = base.documents.values.filter { $0.draft != nil && $0.conflict == nil }
-                        .sorted { $0.page.id < $1.page.id }
-                    for (pageIndex, doc) in drafts.enumerated() {
-                        try Task.checkCancellation()
-                        let key = String(doc.page.id)
-                        var progress = AccountSyncProgress(phase: .uploading,
-                            collective: base.collectives.first { $0.id == doc.collectiveID }, page: doc.page,
-                            completedPages: pageIndex, totalPages: drafts.count)
-                        reportSyncProgress(progress, account: target, targets: targets)
-                        remote.documents[key] = try await DocumentSynchronizer.synchronize(document: doc, api: api)
-                        progress.phase = .saving
-                        reportSyncProgress(progress, account: target, targets: targets)
-                        try await applySync(remote, startedFrom: base, accountID: target.id)
+                    let result = try await AccountSynchronizer.synchronizeDrafts(snapshot: base, api: client(for: target), progress: { progress in
+                        await self.reportSyncProgress(progress, account: target, targets: targets)
+                    }) { value in
+                        try await self.applySync(value, startedFrom: base, accountID: target.id)
+                    }
+                    try Task.checkCancellation()
+                    guard canSyncAccount(target.id) else { throw CancellationError() }
+                    if let failure = result.failures.first {
+                        syncIssues[target.id] = SyncIssue(message: failure.message,
+                            requiresSignIn: result.failures.contains(where: \.requiresSignIn))
                     }
                     // Draft-only sync cannot establish that a previous account refresh error has recovered.
                 }
@@ -1259,43 +1254,51 @@ struct ContentView: View {
         .scrollContentBackground(.hidden)
     }
     private var sidebarFooter: some View {
-        HStack(spacing: 8) {
-            if model.syncActivity != nil || model.activeID.map({ model.syncIssues[$0] != nil }) == true {
-                Button { showSyncIssue.toggle() } label: {
-                    Label(model.syncSummary, systemImage: model.syncSymbol)
+        HStack(spacing: 12) {
+            HStack(spacing: 6) {
+                if model.syncActivity != nil || model.activeID.map({ model.syncIssues[$0] != nil }) == true {
+                    Button { showSyncIssue.toggle() } label: {
+                        Label(model.syncSummary, systemImage: model.syncSymbol)
+                            .font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.tail)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Show sync details")
+                    .popover(isPresented: $showSyncIssue, arrowEdge: .bottom) {
+                        SyncStatusView(model: model).frame(width: 320)
+                    }
+                    .onChange(of: model.activeID) { _, _ in showSyncIssue = false }
+                    .onDisappear { showSyncIssue = false }
+                } else {
+                    if model.busy || model.syncing { ProgressView().controlSize(.small) }
+                    else { Image(systemName: model.syncSymbol).foregroundStyle(.secondary) }
+                    Text(model.syncSummary)
                         .font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.tail)
                 }
-                .buttonStyle(.plain)
-                .help("Show sync details")
-                .popover(isPresented: $showSyncIssue, arrowEdge: .bottom) {
-                    SyncStatusView(model: model).frame(width: 320)
-                }
-                .onChange(of: model.activeID) { _, _ in showSyncIssue = false }
-                .onDisappear { showSyncIssue = false }
-            } else {
-                if model.busy || model.syncing { ProgressView().controlSize(.small) }
-                else { Image(systemName: model.syncSymbol).foregroundStyle(.secondary) }
-                Text(model.syncSummary)
-                    .font(.caption).foregroundStyle(.secondary)
             }
-            Spacer(minLength: 0)
-            Menu {
-                Button("Sync All Accounts", systemImage: "arrow.triangle.2.circlepath") { Task { await model.syncAccounts() } }
-                Button("Refresh All Collectives", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
-                Divider()
-                Toggle("Auto-sync Active Account", isOn: $automaticSync)
-            } label: { Image(systemName: "arrow.triangle.2.circlepath") }
-                .buttonStyle(.plain).menuIndicator(.hidden)
-                .fixedSize().disabled(model.busy || model.syncing)
-                .accessibilityLabel("Sync Actions")
-            #if os(macOS)
-            SettingsLink { Image(systemName: "gearshape") }
-                .buttonStyle(.plain).help("Settings")
-                .accessibilityLabel("Settings")
-            #else
-            Button { showSettings = true } label: { Image(systemName: "gearshape") }
-                .buttonStyle(.plain).accessibilityLabel("Settings")
-            #endif
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .clipped()
+            HStack(spacing: 12) {
+                Menu {
+                    Button("Sync All Accounts", systemImage: "arrow.triangle.2.circlepath") { Task { await model.syncAccounts() } }
+                    Button("Refresh All Collectives", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
+                    Divider()
+                    Toggle("Auto-sync Active Account", isOn: $automaticSync)
+                } label: { Image(systemName: "arrow.triangle.2.circlepath") }
+                    .buttonStyle(.plain).menuIndicator(.hidden)
+                    .fixedSize().disabled(model.busy || model.syncing)
+                    .accessibilityLabel("Sync Actions")
+                #if os(macOS)
+                SettingsLink { Image(systemName: "gearshape") }
+                    .buttonStyle(.plain).help("Settings")
+                    .accessibilityLabel("Settings")
+                #else
+                Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                    .buttonStyle(.plain).accessibilityLabel("Settings")
+                #endif
+            }.fixedSize()
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
     }

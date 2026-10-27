@@ -75,9 +75,11 @@ private actor ProgressRecorder {
     #expect(listing.totalCollectives == 1)
     #expect(listing.totalPages == nil)
     let operations = events.filter { [.uploading, .downloading, .checking].contains($0.phase) }
-    #expect(operations.map(\.phase) == [.uploading, .downloading, .checking])
-    #expect(operations.map { $0.page?.id } == [1, 2, 3])
-    #expect(operations.map(\.completedPages) == [0, 1, 2])
+    #expect(Set(operations.compactMap { $0.page?.id }) == [1, 2, 3])
+    #expect(operations.first { $0.page?.id == 1 }?.phase == .uploading)
+    #expect(operations.first { $0.page?.id == 2 }?.phase == .downloading)
+    #expect(operations.first { $0.page?.id == 3 }?.phase == .checking)
+    #expect(operations.map(\.completedPages) == operations.map(\.completedPages).sorted())
     #expect(operations.allSatisfy { $0.totalPages == 3 })
     let pageCheckpoints = await recorder.checkpointEvents.compactMap { $0 }.filter { $0.page != nil }
     #expect(pageCheckpoints.map(\.phase) == [.saving, .saving, .saving])
@@ -102,8 +104,10 @@ private actor ProgressRecorder {
     #expect(thirdListing.completedCollectives == 2)
     #expect(thirdListing.failureCount == 2)
     let secondPage = try #require(events.first { $0.phase == .downloading && $0.page?.id == 2 })
-    #expect(secondPage.completedPages == 1)
-    #expect(secondPage.failureCount == 1)
+    #expect(secondPage.totalPages == 2)
+    #expect(events.contains { $0.page?.id == 1 && $0.failureCount == 1 })
+    #expect(events.filter { $0.collective?.id == 1 }.map(\.completedPages)
+        == events.filter { $0.collective?.id == 1 }.map(\.completedPages).sorted())
     #expect(events.last?.phase == .finished)
     #expect(events.last?.completedCollectives == 3)
     #expect(events.last?.totalCollectives == 3)
@@ -156,11 +160,12 @@ private actor ProgressRecorder {
     }
     let events = await recorder.events
     #expect(events.last?.phase == .saving)
-    #expect(events.last?.page?.id == 1)
+    #expect([1, 2].contains(events.last?.page?.id ?? 0))
     #expect(events.last?.completedPages == 0)
     #expect(events.last?.completedCollectives == 0)
     #expect(!events.contains { $0.phase == .finished })
-    #expect(!events.contains { $0.page?.id == 2 })
+    #expect(!events.contains { $0.completedPages > 0 })
+    #expect(await recorder.checkpointEvents.count == 3)
 }
 
 @Test func syncProgressDoesNotClaimCompletionAfterCancellation() async throws {

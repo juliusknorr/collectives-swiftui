@@ -4,30 +4,37 @@ import CollectivesCore
 @testable import CollectivesApp
 
 private actor SuspendedDocumentTransport: HTTPTransport {
-    private var suspended: CheckedContinuation<Void, Never>?
-    private var requestWaiter: CheckedContinuation<Void, Never>?
-    private var requestStarted = false
-    private var suspendNextDocument = true
-    private var responseStatus = 200
-    private var responseBody = "server changes"
+    private struct Response: Sendable {
+        let status: Int
+        let body: String
+    }
+    private var suspended: [(pageID: Int, continuation: CheckedContinuation<Response, Never>)] = []
+    private var requestWaiter: (count: Int, continuation: CheckedContinuation<Void, Never>)?
+    private var holdDocuments = true
+    private var response = Response(status: 200, body: "server changes")
     private(set) var documentRequestHosts: [String] = []
 
-    func waitForDocumentRequest() async {
-        if requestStarted { return }
-        await withCheckedContinuation { requestWaiter = $0 }
+    func waitForDocumentRequest(count: Int = 1) async {
+        if suspended.count >= count { return }
+        await withCheckedContinuation { requestWaiter = (count, $0) }
     }
 
-    func suspendNextRequest() {
-        requestStarted = false
-        suspendNextDocument = true
-    }
+    func suspendNextRequest() { holdDocuments = true }
 
     func respond(status: Int = 200, body: String = "server changes", suspendNext: Bool = false) {
-        responseStatus = status
-        responseBody = body
-        if suspendNext { suspendNextRequest() }
-        suspended?.resume()
-        suspended = nil
+        response = Response(status: status, body: body)
+        holdDocuments = suspendNext
+        let requests = suspended
+        suspended = []
+        for request in requests { request.continuation.resume(returning: response) }
+    }
+
+    func respond(pageID: Int, body: String) {
+        let requests = suspended.filter { $0.pageID == pageID }
+        suspended.removeAll { $0.pageID == pageID }
+        for request in requests {
+            request.continuation.resume(returning: Response(status: 200, body: body))
+        }
     }
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
@@ -49,16 +56,20 @@ private actor SuspendedDocumentTransport: HTTPTransport {
         }
         guard url.path.contains("/remote.php/dav/files/") else { throw CollectivesError.invalidResponse }
         documentRequestHosts.append(url.host!)
-        if suspendNextDocument {
-            suspendNextDocument = false
-            await withCheckedContinuation { continuation in
-                suspended = continuation
-                requestStarted = true
-                requestWaiter?.resume()
-                requestWaiter = nil
+        let documentResponse: Response
+        if holdDocuments {
+            documentResponse = await withCheckedContinuation { continuation in
+                let pageID = Int(url.deletingPathExtension().lastPathComponent)!
+                suspended.append((pageID, continuation))
+                if let waiter = requestWaiter, suspended.count >= waiter.count {
+                    requestWaiter = nil
+                    waiter.continuation.resume()
+                }
             }
+        } else {
+            documentResponse = response
         }
-        return (Data(responseBody.utf8), HTTPURLResponse(url: url, statusCode: responseStatus,
+        return (Data(documentResponse.body.utf8), HTTPURLResponse(url: url, statusCode: documentResponse.status,
             httpVersion: nil, headerFields: ["ETag": "\"updated\""])!)
     }
 }
@@ -252,23 +263,24 @@ private final class ConcurrentSyncFixture {
     let fixture = try await ConcurrentSyncFixture()
     defer { fixture.cleanup() }
     let sync = Task { await fixture.model.syncAccounts(automatic: true) }
-    await fixture.transport.waitForDocumentRequest()
+    await fixture.transport.waitForDocumentRequest(count: 2)
     #expect(fixture.model.syncing)
     #expect(!fixture.model.busy)
     #expect(fixture.model.syncActivity?.account.id == fixture.accounts[0].id)
     #expect(fixture.model.syncActivity?.accountIndex == 1)
     #expect(fixture.model.syncActivity?.accountTotal == 1)
     #expect(fixture.model.syncActivity?.progress.collective?.id == 7)
-    #expect(fixture.model.syncActivity?.progress.page?.id == 70)
+    #expect([70, 71].contains(fixture.model.syncActivity?.progress.page?.id ?? 0))
     #expect(fixture.model.syncActivity?.progress.totalPages == 2)
     fixture.model.edited("draft typed during account refresh")
-    await fixture.transport.respond(body: "refreshed server copy", suspendNext: true)
-    await fixture.transport.waitForDocumentRequest()
+    await fixture.transport.respond(pageID: 70, body: "refreshed server copy")
+    let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+    while fixture.model.syncActivity?.progress.completedPages != 1 && ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(10))
+    }
 
-    // The second document request starts after the first document's checkpoint is saved.
+    // Page 71 remains suspended while page 70 is saved and merged with the newer edit.
     #expect(!fixture.model.busy)
-    #expect(fixture.model.syncActivity?.progress.phase == .checking)
-    #expect(fixture.model.syncActivity?.progress.page?.id == 71)
     #expect(fixture.model.syncActivity?.progress.completedPages == 1)
     #expect(fixture.model.text == "draft typed during account refresh")
     #expect(fixture.model.document?.draft == "draft typed during account refresh")
@@ -326,13 +338,11 @@ func resolvingConflictPersistsChosenVersion(useServer: Bool) async throws {
     let fixture = try await ConcurrentSyncFixture()
     defer { fixture.cleanup() }
     let sync = Task { await fixture.model.syncAccounts() }
-    await fixture.transport.waitForDocumentRequest()
+    await fixture.transport.waitForDocumentRequest(count: 2)
     #expect(fixture.model.syncActivity?.accountTotal == 2)
     #expect(fixture.model.syncActivity?.accountIndex == 1)
     await fixture.transport.respond(suspendNext: true)
-    await fixture.transport.waitForDocumentRequest()
-    await fixture.transport.respond(suspendNext: true)
-    await fixture.transport.waitForDocumentRequest()
+    await fixture.transport.waitForDocumentRequest(count: 2)
     #expect(fixture.model.syncActivity?.account.id == fixture.accounts[1].id)
     #expect(fixture.model.syncActivity?.accountIndex == 2)
     #expect(fixture.model.syncActivity?.accountTotal == 2)
@@ -385,17 +395,17 @@ func removingAccountDuringPageSyncIgnoresLateResponses(status: Int) async throws
     let removed = fixture.accounts[0]
     let retained = fixture.accounts[1]
     let sync = Task { await fixture.model.syncAccounts() }
-    await fixture.transport.waitForDocumentRequest()
+    await fixture.transport.waitForDocumentRequest(count: 2)
 
     try await fixture.model.removeAccount(removed.id)
     #expect(fixture.model.syncActivity?.account.id != removed.id)
     await fixture.transport.respond(body: "late first account response", suspendNext: true)
-    await fixture.transport.waitForDocumentRequest()
+    await fixture.transport.waitForDocumentRequest(count: 2)
     #expect(fixture.model.syncActivity?.account.id == retained.id)
     await fixture.transport.respond(body: "remaining account server copy")
     #expect(await sync.value)
 
-    #expect(await fixture.transport.documentRequestHosts == ["first.invalid", "second.invalid", "second.invalid"])
+    #expect(await fixture.transport.documentRequestHosts == ["first.invalid", "first.invalid", "second.invalid", "second.invalid"])
     #expect(fixture.model.syncIssues[removed.id] == nil)
     #expect(fixture.model.collectiveListingErrors[removed.id] == nil)
     #expect(fixture.model.accountCollectives[removed.id] == nil)
@@ -415,7 +425,7 @@ func removingAccountDuringPageSyncIgnoresLateResponses(status: Int) async throws
     let retained = fixture.accounts[0]
     let removed = fixture.accounts[1]
     let sync = Task { await fixture.model.syncAccounts() }
-    await fixture.transport.waitForDocumentRequest()
+    await fixture.transport.waitForDocumentRequest(count: 2)
 
     try await fixture.model.removeAccount(removed.id)
     #expect(fixture.model.syncing)

@@ -69,7 +69,7 @@ private func downloadPage(_ id: Int, path: String = "Current") -> Page {
     snapshot.pages["9"] = [downloadPage(90)]
     let api = DownloadStub(pages: [downloadPage(1), downloadPage(2)])
     let result = try await AccountSynchronizer.download(collectiveID: 4, snapshot: snapshot, api: api) { _ in }.snapshot
-    #expect(await api.requests == [downloadPage(1), downloadPage(2)])
+    #expect(await api.requests.map(\.id).sorted() == [1, 2])
     #expect(result.documents["1"]?.markdown == "remote 1")
     #expect(result.documents["1"]?.etag == "revision 1")
     #expect(result.documents["1"]?.page.filePath == "Current")
@@ -108,20 +108,23 @@ private func downloadPage(_ id: Int, path: String = "Current") -> Page {
     #expect(await api.requests.isEmpty)
 }
 
-@Test func offlineDownloadHonorsCancellationBeforeDownloadingNextPage() async throws {
-    let api = DownloadStub(pages: [downloadPage(1), downloadPage(2)])
+@Test func offlineDownloadHonorsCancellationBeforeAdmittingMorePages() async throws {
+    let api = DownloadStub(pages: (1...5).map { downloadPage($0) })
     let checkpoints = DownloadCheckpoints()
     let task = Task {
         try await AccountSynchronizer.download(collectiveID: 4, snapshot: AccountSnapshot(), api: api) {
             await checkpoints.save($0)
-            if $0.documents["1"] != nil {
+            if !$0.documents.isEmpty {
                 withUnsafeCurrentTask { $0?.cancel() }
             }
         }
     }
     await #expect(throws: CancellationError.self) { try await task.value }
-    #expect(await api.requests == [downloadPage(1)])
+    #expect(await api.requests.count <= 3)
+    #expect(await api.requests.allSatisfy { (1...3).contains($0.id) })
     let partial = await checkpoints.latest()
-    #expect(partial.documents["1"]?.markdown == "remote 1")
-    #expect(partial.documents["2"] == nil)
+    #expect(partial.documents.count == 1)
+    let saved = try #require(partial.documents.values.first)
+    #expect(saved.markdown == "remote \(saved.page.id)")
+    #expect(await checkpoints.snapshots.count == 2)
 }

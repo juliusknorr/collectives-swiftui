@@ -24,7 +24,10 @@ struct SyncActivity {
     let progress: AccountSyncProgress
 
     var title: String {
-        switch progress.phase {
+        if progress.activePages.count > 1 && progress.phase != .saving {
+            return "Syncing \(progress.activePages.count) pages…"
+        }
+        return switch progress.phase {
         case .listingCollectives: "Loading collectives…"
         case .listingPages: "Loading pages…"
         case .downloading: "Downloading page…"
