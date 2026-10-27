@@ -190,3 +190,24 @@ Preview prepares its authenticated client in the background so image and link
 resolution resumes when credentials become available. Concurrent preview and sync
 requests share one in-flight client preparation rather than repeating Keychain
 lookups. Failed preparation is cleared so a later action can retry.
+
+### Measuring warm Text handoffs
+
+On macOS, run `make benchmark-text` (or `TEXT_BENCHMARK_ROUNDS=20 make benchmark-text`).
+It generates assets if needed, compiles a small WebKit harness, and alternates two
+different synthetic notes within each workload: roughly 1 KiB and 10 KiB of mixed
+Markdown, 100 KiB of prose, and 100 KiB with many tables and tasks. The first switch
+within each workload is discarded, followed by 10 measured switches by default.
+No server, accounts, credentials, or user notes are accessed.
+
+The table reports median/p95 native finish/start time until the `loaded` callback,
+plus the finish round trip and JavaScript document-reset time. The JSON report at
+`.build/embedded-text/benchmark-results.json` records sample counts, fixture sizes,
+the operating-system version, and the pinned Text revision. Results are generated
+locally and ignored by Git.
+
+This isolates editor/bridge work. It excludes SwiftUI navigation, draft persistence,
+pending edits, network requests, and painting; it is not a measurement of visible
+page-switch latency. Mixed fixtures deliberately stress table/task node views, so
+compare prose and structured workloads separately. Compare runs on the same machine
+and do not treat these timings as CI pass/fail thresholds.
