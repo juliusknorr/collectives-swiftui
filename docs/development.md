@@ -108,3 +108,44 @@ Dependency versions are recorded in `Package.resolved`; bundled notices live in 
 - `Tests/`: Swift tests for both modules.
 - `dev/`: local Nextcloud server, fixtures, and integration checks.
 - `scripts/`: Mac build, bundling, and local signing helpers.
+
+## Experimental offline Nextcloud Text
+
+The `poc/nextcloud-text` branch embeds a pinned Nextcloud Text build in a local
+WKWebView on Mac and iOS. Build normally with `make run`, select a downloaded,
+editable page, then use the **Text** toolbar menu and choose **Open Offline Text
+(Experimental)…**. It runs without a web server or network connection. Text
+edits save into the same local Markdown drafts as source editing. Native sync
+pauses while the editor is open and resumes after **Done**.
+
+Rich edits can normalize Markdown and discard unsupported syntax. Before the
+first Text session on a page, the app saves the exact source in the account's
+local snapshot. **Restore Source from Before Text Editing…** in the same menu
+restores that copy as a draft. Opening without editing leaves the source alone.
+Try this on sample pages first. Attachments, mentions, live collaboration, and
+server-side Text sessions are not implemented in this prototype.
+
+The bundled editor receives no credentials or server URL. Network connections
+and external navigation are blocked. See
+[the embedded editor notes](../Resources/EmbeddedText/README.md) for source revision,
+licenses, build adjustments, and asset regeneration. A full Text npm install is
+not needed to build the native app.
+
+Verification:
+
+```sh
+make test
+node scripts/test-embedded-text.cjs
+xcrun swift scripts/test-embedded-text-webkit.swift Resources/EmbeddedText
+# On incomplete preview CLT, add -sdk /path/to/compatible/MacOSX.sdk to xcrun swift.
+```
+
+The WebKit smoke uses a synthetic document, loads the actual bundled editor from
+`file://`, verifies no initial source rewrite, and checks that a Unicode edit
+serializes back to Markdown. It does not contact Nextcloud or modify pages.
+iOS device and App Store sandbox validation remain separate checks.
+
+The next experiment is collaboration through Text's existing Yjs provider and
+session API. It needs authenticated create/push/sync/close transport, an exclusive
+handoff from native WebDAV sync, and persisted CRDT state for offline reconnect.
+A generic Yjs WebSocket endpoint is insufficient for Nextcloud Text's protocol.
