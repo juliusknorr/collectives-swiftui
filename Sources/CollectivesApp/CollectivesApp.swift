@@ -306,15 +306,18 @@ final class AppModel {
         let previous = snapshot
         do {
             let localStore = store
-            snapshot = try await OfflineDownloader.download(collectiveID: collectiveID, snapshot: snapshot, api: client()) { value in
+            let result = try await AccountSynchronizer.download(collectiveID: collectiveID, snapshot: snapshot, api: client()) { value in
                 try await localStore.saveSnapshot(value, accountID: id)
             }
-            updateEditor()
-            message = "Downloaded \(downloadedCount) page bodies. Existing drafts preserved. Images and attachments are not downloaded yet."
+            snapshot = result.snapshot
+            reconcileSelection()
+            message = result.failures.isEmpty
+                ? "Downloaded \(downloadedCount) page bodies. Existing drafts preserved. Images and attachments are not downloaded yet."
+                : "Download incomplete; \(result.failures.count) pages need retry. Saved pages remain offline."
         } catch {
-            // Keep successful checkpoints if a later page fails.
+            // Keep successful checkpoints if a later step fails.
             snapshot = (try? await store.snapshot(accountID: id)) ?? previous
-            updateEditor()
+            reconcileSelection()
             message = "Download incomplete; saved pages remain offline. \(error.localizedDescription)"
         }
     }

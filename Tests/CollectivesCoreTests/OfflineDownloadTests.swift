@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import CollectivesCore
 
-private actor DownloadStub: CollectiveDownloadAPI {
+private actor DownloadStub: AccountSyncAPI {
     enum Failure: Error { case offline }
     let pageList: [Page]
     let failingPage: Int?
@@ -13,7 +13,9 @@ private actor DownloadStub: CollectiveDownloadAPI {
         self.failingPage = failingPage
     }
 
+    func collectives() async throws -> [Collective] { [Collective(id: 4, name: "Team")] }
     func pages(collectiveID: Int) async throws -> [Page] { pageList }
+    func upload(page: Page, markdown: String, etag: String?) async throws -> String? { Issue.record("Unexpected upload"); return nil }
 
     func download(page: Page) async throws -> RemoteDocument {
         requests.append(page)
@@ -41,9 +43,9 @@ private func downloadPage(_ id: Int, path: String = "Current") -> Page {
         markdown: "base 2", etag: "base revision 2", conflict: conflict)
     let api = DownloadStub(pages: [downloadPage(1), downloadPage(2)])
     let checkpoints = DownloadCheckpoints()
-    let result = try await OfflineDownloader.download(collectiveID: 4, snapshot: snapshot, api: api) {
+    let result = try await AccountSynchronizer.download(collectiveID: 4, snapshot: snapshot, api: api) {
         await checkpoints.save($0)
-    }
+    }.snapshot
     #expect(await api.requests.isEmpty)
     #expect(result.documents["1"]?.draft == "local edit")
     #expect(result.documents["1"]?.markdown == "base")
@@ -66,7 +68,7 @@ private func downloadPage(_ id: Int, path: String = "Current") -> Page {
         markdown: "unlisted content", etag: "unlisted revision", draft: "retained draft")
     snapshot.pages["9"] = [downloadPage(90)]
     let api = DownloadStub(pages: [downloadPage(1), downloadPage(2)])
-    let result = try await OfflineDownloader.download(collectiveID: 4, snapshot: snapshot, api: api) { _ in }
+    let result = try await AccountSynchronizer.download(collectiveID: 4, snapshot: snapshot, api: api) { _ in }.snapshot
     #expect(await api.requests == [downloadPage(1), downloadPage(2)])
     #expect(result.documents["1"]?.markdown == "remote 1")
     #expect(result.documents["1"]?.etag == "revision 1")
@@ -76,38 +78,30 @@ private func downloadPage(_ id: Int, path: String = "Current") -> Page {
     #expect(result.pages["9"] == snapshot.pages["9"])
 }
 
-@Test func offlineDownloadCheckpointsPartialProgressAndCanRetry() async throws {
+@Test func offlineDownloadReportsFailedPagesAndCanRetry() async throws {
     let pages = [downloadPage(1), downloadPage(2), downloadPage(3)]
     let api = DownloadStub(pages: pages, failingPage: 2)
-    let checkpoints = DownloadCheckpoints()
     var snapshot = AccountSnapshot()
     snapshot.documents["2"] = CachedDocument(page: downloadPage(2, path: "Old"), collectiveID: 4,
         markdown: "previously cached", etag: "previous revision")
-    await #expect(throws: DownloadStub.Failure.self) {
-        try await OfflineDownloader.download(collectiveID: 4, snapshot: snapshot, api: api) {
-            await checkpoints.save($0)
-        }
-    }
-    let partial = await checkpoints.latest()
-    #expect(partial.pages["4"] == pages)
-    #expect(partial.documents["1"]?.markdown == "remote 1")
-    #expect(partial.documents["2"]?.markdown == "previously cached")
-    #expect(partial.documents["2"]?.etag == "previous revision")
-    #expect(partial.documents["2"]?.page.filePath == "Current")
-    #expect(partial.documents["3"] == nil)
-    #expect(await checkpoints.snapshots.count == 2)
+    let partial = try await AccountSynchronizer.download(collectiveID: 4, snapshot: snapshot, api: api) { _ in }
+    #expect(partial.failures.map(\.pageID) == [2])
+    #expect(partial.snapshot.pages["4"] == pages)
+    #expect(partial.snapshot.documents["1"]?.markdown == "remote 1")
+    #expect(partial.snapshot.documents["2"]?.markdown == "previously cached")
+    #expect(partial.snapshot.documents["2"]?.etag == "previous revision")
+    #expect(partial.snapshot.documents["2"]?.page.filePath == "Current")
+    #expect(partial.snapshot.documents["3"]?.markdown == "remote 3")
     let retryAPI = DownloadStub(pages: pages)
-    let recovered = try await OfflineDownloader.download(collectiveID: 4, snapshot: partial, api: retryAPI) {
-        await checkpoints.save($0)
-    }
-    #expect(recovered.documents.count == 3)
-    #expect(recovered.documents["3"]?.markdown == "remote 3")
+    let recovered = try await AccountSynchronizer.download(collectiveID: 4, snapshot: partial.snapshot, api: retryAPI) { _ in }
+    #expect(recovered.failures.isEmpty)
+    #expect(recovered.snapshot.documents["2"]?.markdown == "remote 2")
 }
 
 @Test func offlineDownloadStopsWhenCheckpointCannotBeSaved() async throws {
     let api = DownloadStub(pages: [downloadPage(1)])
     await #expect(throws: DownloadStub.Failure.self) {
-        try await OfflineDownloader.download(collectiveID: 4, snapshot: AccountSnapshot(), api: api) { _ in
+        try await AccountSynchronizer.download(collectiveID: 4, snapshot: AccountSnapshot(), api: api) { _ in
             throw DownloadStub.Failure.offline
         }
     }
@@ -118,7 +112,7 @@ private func downloadPage(_ id: Int, path: String = "Current") -> Page {
     let api = DownloadStub(pages: [downloadPage(1), downloadPage(2)])
     let checkpoints = DownloadCheckpoints()
     let task = Task {
-        try await OfflineDownloader.download(collectiveID: 4, snapshot: AccountSnapshot(), api: api) {
+        try await AccountSynchronizer.download(collectiveID: 4, snapshot: AccountSnapshot(), api: api) {
             await checkpoints.save($0)
             if $0.documents["1"] != nil {
                 withUnsafeCurrentTask { $0?.cancel() }
