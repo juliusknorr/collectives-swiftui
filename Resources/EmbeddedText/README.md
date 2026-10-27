@@ -16,8 +16,10 @@ production assets, avoiding a full Text dependency installation. The adapter
 and theme live outside vendor. The generated IIFE includes dynamic imports;
 Vite retains CSS preloads only. The build script adds a small `resetMarkdownContent` embedding method to its
 staged copy of Text. It replaces content without emitting an initial update,
-creates fresh ProseMirror plugin state to clear undo/redo and selection, and
-refreshes headings/toolbar state. It does not change the document schema, Markdown
+creates fresh ProseMirror plugin state to clear undo/redo and selection, sets
+editability directly without emitting an update, and refreshes headings/toolbar
+state. The idle document is empty and noneditable; the editing toolbar stays
+mounted for subsequent sessions. It does not change the document schema, Markdown
 parser or serializer. The original Text checkout stays unchanged. The patch is
 pinned and fails if its expected entry point changes.
 

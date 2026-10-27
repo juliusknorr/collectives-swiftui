@@ -32,14 +32,15 @@ with tempfile.TemporaryDirectory() as temporary:
     # Tiptap remounting, suppress initial updates and reset all plugin history.
     entry = staging / 'js/text-editor.mjs'
     original = 'setContent(e){return this.#n.content=e,this.#t.setContent?.(e),this}'
-    reset = """resetMarkdownContent(e){
+    reset = """resetMarkdownContent(e,editable=false){
         this.#t.setContent(e,{addToHistory:false});
         const n=this.#t.editor;
         n.view.updateState(n.state.constructor.create({schema:n.schema,doc:n.state.doc,plugins:n.state.plugins}));
+        n.setEditable(editable,false);
         this.#t.updateHeadings?.();
         n.emit('transaction',{editor:n,transaction:n.state.tr,appendedTransactions:[]});
         n.emit('selectionUpdate',{editor:n,transaction:n.state.tr});
-        return {canUndo:n.can().undo(),canRedo:n.can().redo()};
+        return {canUndo:n.can().undo(),canRedo:n.can().redo(),editable:n.isEditable};
     }"""
     entry_code = entry.read_text()
     if entry_code.count(original) != 1:

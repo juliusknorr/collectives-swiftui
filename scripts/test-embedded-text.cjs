@@ -15,7 +15,7 @@ const window = {
         creates++; options = input; input.onLoaded();
         return {
             setReadOnly(value) { readOnly = value }, destroy() { destroys++ },
-            resetMarkdownContent(content) { resets++; options.content = content; return { canUndo: false, canRedo: false } },
+            resetMarkdownContent(content, editable) { resets++; options.content = content; readOnly = !editable; return { canUndo: false, canRedo: false, editable } },
         };
     } } },
     reportTextError() { throw new Error('Unexpected adapter error') },
@@ -55,6 +55,6 @@ vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../Resources/EmbeddedTe
     assert.equal(messages.at(-1).type, 'finished');
     assert.equal(messages.at(-1).session, 'three');
     assert.equal(creates, 1, 'Reuse the warmed editor across all pages');
-    assert.equal(resets, 6, 'Reset each opened and closed document');
+    assert.equal(resets, 7, 'Reset each opened and closed document');
     console.log('Offline Text mounted-editor/flush/page-isolation contracts passed.');
 })().catch(error => { console.error(error); process.exitCode = 1 });

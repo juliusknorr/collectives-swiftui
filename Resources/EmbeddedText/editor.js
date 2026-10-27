@@ -32,10 +32,8 @@
         // undo, selection and plugin state without remounting Vue or Tiptap.
         session = undefined;
         revision = 0;
-        instance.resetMarkdownContent(input.markdown);
-        instance.setReadOnly(false);
-        // Vue applies editable state in a microtask; suppress its synthetic
-        // update before binding this page's native draft callback.
+        instance.resetMarkdownContent(input.markdown, true);
+        // Settle plugin/view updates before binding the native draft callback.
         await Promise.resolve();
         session = input.session;
         post({ type: 'loaded', session });
@@ -44,11 +42,15 @@
     window.finishTextEditor = () => enqueue(() => {
         const finished = session;
         session = undefined;
-        instance?.setReadOnly(true);
-        instance?.resetMarkdownContent('');
+        instance?.resetMarkdownContent('', false);
         post({ type: 'finished', session: finished });
     });
-    enqueue(async () => { await create('', true); post({ type: 'warmed' }) });
+    enqueue(async () => {
+        // This host only renders the editing UI; disable input directly while idle.
+        await create('', false);
+        instance.resetMarkdownContent('', false);
+        post({ type: 'warmed' });
+    });
     post({ type: 'ready' });
     if (!window.webkit?.messageHandlers.textEditor) {
         window.startTextEditor({ session: 'browser-smoke', markdown: '# Offline Text\n\nEdit **rich text** without a server.\n\n- [ ] Test a task\n' });

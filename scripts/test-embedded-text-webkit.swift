@@ -47,8 +47,10 @@ final class Smoke: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                 const editor = await window.startTextEditor(input);
                 await new Promise(resolve => setTimeout(resolve, 25));
                 window.webkit.messageHandlers.textEditor.postMessage({type:'editing',session:input.session});
+                if (document.querySelector('.ProseMirror').getAttribute('contenteditable') !== 'true') throw new Error('Editor is read-only after opening');
                 editor.insertAtCursor(' Offline edit 日本語');
                 await window.finishTextEditor();
+                if (document.querySelector('.ProseMirror').getAttribute('contenteditable') !== 'false') throw new Error('Closed editor remained editable');
                 return null;
                 """, arguments: ["input": ["session": session, "markdown": source]], in: nil, in: .page) { result in
                 if case .failure(let error) = result { self.fail("Boot/input failed: \(error)") }
@@ -70,7 +72,8 @@ final class Smoke: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                     const editor = await window.startTextEditor(input);
                     await new Promise(resolve => setTimeout(resolve, 25));
                     const html = editor.getHTML();
-                    const state = editor.resetMarkdownContent(input.markdown);
+                    const state = editor.resetMarkdownContent(input.markdown, true);
+                    if (!state.editable || document.querySelector('.ProseMirror').getAttribute('contenteditable') !== 'true') throw new Error('Reused editor is read-only');
                     if (state.canUndo || state.canRedo) throw new Error('Previous page undo/redo history leaked');
                     if (editor.getHTML() !== html) throw new Error('Reset changed rendered content');
                     await window.finishTextEditor();
