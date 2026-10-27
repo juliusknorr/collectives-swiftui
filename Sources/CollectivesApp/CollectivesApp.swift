@@ -981,6 +981,7 @@ struct ContentView: View {
     @State private var confirmRestoreText = false
     @State private var showingFind = false
     @State private var conflictReview: ConflictReviewRequest?
+    @State private var showActivity = false
     @State private var compactColumn: NavigationSplitViewColumn = .sidebar
     var body: some View {
         Group {
@@ -1009,6 +1010,12 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity)
                     .background(AppSurface.chrome)
             }
+        }
+        .task(id: model.busy) {
+            showActivity = false
+            guard model.busy else { return }
+            do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+            if model.busy { showActivity = true }
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -1178,9 +1185,14 @@ struct ContentView: View {
             } else {
                 ContentUnavailableView("Select a Page", systemImage: "doc.text", description: Text("Choose a page to read, or download this collective for offline editing."))
             }
-            if model.busy { ProgressView() }
-            Text(model.message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 8) {
+                Text(model.message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                ProgressView().controlSize(.small)
+                    .frame(width: 16, height: 16)
+                    .opacity(model.busy && showActivity ? 1 : 0)
+                    .accessibilityHidden(!model.busy || !showActivity)
+            }
         }.padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(AppSurface.document)
@@ -1429,7 +1441,7 @@ struct ContentView: View {
                     .onChange(of: model.activeID) { _, _ in showSyncIssue = false }
                     .onDisappear { showSyncIssue = false }
                 } else {
-                    if model.busy || model.syncing { ProgressView().controlSize(.small) }
+                    if model.syncing || (model.busy && showActivity) { ProgressView().controlSize(.small) }
                     else { Image(systemName: model.syncSymbol).foregroundStyle(.secondary) }
                     Text(model.syncSummary)
                         .font(.caption).foregroundStyle(.secondary)

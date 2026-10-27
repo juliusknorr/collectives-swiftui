@@ -144,17 +144,20 @@ struct OfflineTextPage: View {
                 if runtime.failed {
                     ContentUnavailableView("Rich Text Unavailable", systemImage: "exclamationmark.triangle",
                         description: Text("Switch to View or Edit. Saved edits and the original source are retained."))
-                } else if !runtime.loaded && showProgress {
-                    ProgressView(runtime.retainingContent ? "Switching page…" : "Preparing rich text…")
+                } else if needsProgress && showProgress {
+                    ProgressView("Preparing rich text…")
                 }
             }
         }
-        .task(id: runtime.loaded) {
+        .task(id: needsProgress) {
             showProgress = false
-            guard !runtime.loaded else { return }
-            do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
-            if !runtime.loaded { showProgress = true }
+            guard needsProgress else { return }
+            do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+            if needsProgress { showProgress = true }
         }
+    }
+    private var needsProgress: Bool {
+        !runtime.loaded && !runtime.retainingContent && !runtime.failed
     }
 }
 
