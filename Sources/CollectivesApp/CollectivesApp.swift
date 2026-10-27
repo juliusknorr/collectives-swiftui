@@ -153,7 +153,7 @@ final class AppModel {
         preferences.lastAccountID = id
         do {
             let remote = try await client().collectives()
-            snapshot.collectives = retainingUnsyncedCollectives(remote, in: snapshot)
+            snapshot.replaceCollectives(remote)
             accountCollectives[id] = snapshot.collectives
             try await persist(); message = "Collectives refreshed."
             collectiveListingErrors[id] = nil
@@ -166,14 +166,6 @@ final class AppModel {
     func persist() async throws {
         guard let id = activeID else { return }
         try await store.saveSnapshot(snapshot, accountID: id)
-    }
-    private func retainingUnsyncedCollectives(_ remote: [Collective], in local: AccountSnapshot) -> [Collective] {
-        let remoteIDs = Set(remote.map(\.id))
-        return remote + local.collectives.filter { collective in
-            !remoteIDs.contains(collective.id) && local.documents.values.contains {
-                $0.collectiveID == collective.id && ($0.draft != nil || $0.conflict != nil)
-            }
-        }
     }
     func collectives(for accountID: UUID) -> [Collective] {
         accountID == activeID ? snapshot.collectives : accountCollectives[accountID] ?? []
@@ -188,7 +180,7 @@ final class AppModel {
             do {
                 var local = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
                 let remote = try await makeClient(target).collectives()
-                local.collectives = retainingUnsyncedCollectives(remote, in: local)
+                local.replaceCollectives(remote)
                 accountCollectives[target.id] = local.collectives
                 if target.id == activeID { snapshot = local }
                 try await store.saveSnapshot(local, accountID: target.id)
@@ -229,14 +221,7 @@ final class AppModel {
         selectedCollective = id; selectedPage = nil; text = ""
         library.collectiveID = id; library.pageID = nil; saveLibrary()
         do {
-            let pages = try await client().pages(collectiveID: id)
-            snapshot.pages[String(id)] = pages
-            for page in pages {
-                if var cached = snapshot.documents[String(page.id)] {
-                    cached.page = page
-                    snapshot.documents[String(page.id)] = cached
-                }
-            }
+            snapshot.replacePages(try await client().pages(collectiveID: id), collectiveID: id)
             try await persist(); message = "Select a page."
         } catch { message = "Using cached pages. \(error.localizedDescription)" }
     }

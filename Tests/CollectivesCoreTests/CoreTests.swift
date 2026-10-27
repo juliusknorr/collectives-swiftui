@@ -202,3 +202,21 @@ private let page = Page(id: 42, title: "Notes", fileName: "Notes #1.md", filePat
     #expect(requests[0].url?.path == "/nextcloud/ocs/v2.php/apps/collectives/api/v1.0/collectives/3/pages/43")
     #expect(try JSONDecoder().decode([String: String].self, from: requests[0].httpBody!) == ["title": "Renamed 🌱"])
 }
+
+@Test func replacingPagesKeepsRemovedPagesWithLocalWorkAndDropsCleanOnes() {
+    let moved = Page(id: 1, title: "Moved", fileName: "Moved.md", filePath: "New", collectivePath: "Collectives/Team")
+    let drafted = Page(id: 2, title: "Drafted", fileName: "Drafted.md", filePath: "", collectivePath: "Collectives/Team")
+    let clean = Page(id: 3, title: "Clean", fileName: "Clean.md", filePath: "", collectivePath: "Collectives/Team")
+    var snapshot = AccountSnapshot()
+    let original = Page(id: 1, title: "Original", fileName: "Original.md", filePath: "Old", collectivePath: "Collectives/Team")
+    snapshot.pages["4"] = [original, drafted, clean]
+    snapshot.documents["1"] = CachedDocument(page: original, collectiveID: 4, markdown: "one", etag: "a")
+    snapshot.documents["2"] = CachedDocument(page: drafted, collectiveID: 4, markdown: "two", etag: "b", draft: "local")
+    snapshot.documents["3"] = CachedDocument(page: clean, collectiveID: 4, markdown: "three", etag: "c")
+    snapshot.replacePages([moved], collectiveID: 4)
+    #expect(snapshot.pages["4"] == [moved, drafted])
+    #expect(snapshot.documents["1"]?.page == moved)
+    #expect(snapshot.documents["1"]?.markdown == "one")
+    #expect(snapshot.documents["2"]?.draft == "local")
+    #expect(snapshot.documents["3"] == nil)
+}

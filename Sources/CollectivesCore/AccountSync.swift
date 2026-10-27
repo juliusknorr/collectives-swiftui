@@ -28,25 +28,7 @@ public enum AccountSynchronizer {
         let collectives = try await api.collectives()
         var updated = snapshot
         var failures: [AccountSyncFailure] = []
-        let collectiveIDs = Set(collectives.map(\.id))
-        // Keep deleted items with local work visible until the user resolves it.
-        let preservedCollectives = snapshot.collectives.filter { collective in
-            !collectiveIDs.contains(collective.id) && snapshot.documents.values.contains {
-                $0.collectiveID == collective.id && hasLocalChanges($0)
-            }
-        }
-        updated.collectives = collectives + preservedCollectives
-        for key in Array(updated.documents.keys) {
-            guard let document = updated.documents[key], !collectiveIDs.contains(document.collectiveID),
-                  !hasLocalChanges(document) else { continue }
-            updated.documents.removeValue(forKey: key)
-        }
-        for key in Array(updated.pages.keys) where !collectiveIDs.contains(Int(key) ?? -1) {
-            let retained = (updated.pages[key] ?? []).filter { page in
-                updated.documents[String(page.id)].map(hasLocalChanges) ?? false
-            }
-            updated.pages[key] = retained.isEmpty ? nil : retained
-        }
+        updated.replaceCollectives(collectives)
         try await checkpoint(updated)
 
         for collective in collectives {
@@ -59,24 +41,7 @@ public enum AccountSynchronizer {
                 failures.append(AccountSyncFailure(collectiveID: collective.id, pageID: nil, message: error.localizedDescription))
                 continue
             }
-            let pageIDs = Set(pages.map(\.id))
-            let retainedPages = (updated.pages[String(collective.id)] ?? []).filter { page in
-                !pageIDs.contains(page.id) && (updated.documents[String(page.id)].map(hasLocalChanges) ?? false)
-            }
-            updated.pages[String(collective.id)] = pages + retainedPages
-            for key in Array(updated.documents.keys) {
-                guard let document = updated.documents[key], document.collectiveID == collective.id,
-                      !pageIDs.contains(document.page.id), !hasLocalChanges(document) else { continue }
-                updated.documents.removeValue(forKey: key)
-            }
-            for page in pages {
-                let key = String(page.id)
-                if var document = updated.documents[key] {
-                    document.page = page
-                    document.collectiveID = collective.id
-                    updated.documents[key] = document
-                }
-            }
+            updated.replacePages(pages, collectiveID: collective.id)
             try await checkpoint(updated)
             for page in pages {
                 try Task.checkCancellation()
@@ -97,10 +62,6 @@ public enum AccountSynchronizer {
             }
         }
         return AccountSyncResult(snapshot: updated, failures: failures)
-    }
-
-    private static func hasLocalChanges(_ document: CachedDocument) -> Bool {
-        document.draft != nil || document.conflict != nil
     }
 
     private static func rethrowCancellation(_ error: any Error) throws {

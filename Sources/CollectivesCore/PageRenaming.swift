@@ -66,13 +66,7 @@ public enum PageRenamer {
     private static func result(page: Page, pages: [Page], collectiveID: Int, snapshot: AccountSnapshot,
                                warnings: [String] = []) -> RenamedPage {
         var next = snapshot
-        next.pages[String(collectiveID)] = pages
-        for page in pages {
-            if var cached = next.documents[String(page.id)], cached.collectiveID == collectiveID {
-                cached.page = page
-                next.documents[String(page.id)] = cached
-            }
-        }
+        next.replacePages(pages, collectiveID: collectiveID)
         return RenamedPage(page: page, snapshot: next, warnings: warnings)
     }
 }

@@ -55,6 +55,38 @@ public struct AccountSnapshot: Codable, Sendable {
     public var documents: [String: CachedDocument] = [:]
     public init() {}
 }
+public extension CachedDocument {
+    var hasLocalChanges: Bool { draft != nil || conflict != nil }
+}
+public extension AccountSnapshot {
+    /// Collectives removed on the server stay visible while they hold drafts or conflicts.
+    mutating func replaceCollectives(_ remote: [Collective]) {
+        let remoteIDs = Set(remote.map(\.id))
+        let unsyncedIDs = Set(documents.values.filter(\.hasLocalChanges).map(\.collectiveID))
+        collectives = remote + collectives.filter { !remoteIDs.contains($0.id) && unsyncedIDs.contains($0.id) }
+        documents = documents.filter { remoteIDs.contains($0.value.collectiveID) || $0.value.hasLocalChanges }
+        for key in Array(pages.keys) where !remoteIDs.contains(Int(key) ?? -1) {
+            let retained = (pages[key] ?? []).filter { documents[String($0.id)]?.hasLocalChanges ?? false }
+            pages[key] = retained.isEmpty ? nil : retained
+        }
+    }
+    /// Pages removed on the server stay visible while they hold drafts or conflicts.
+    /// Cached documents follow renames and moves without touching their content.
+    mutating func replacePages(_ remote: [Page], collectiveID: Int) {
+        let remoteIDs = Set(remote.map(\.id))
+        let retained = (pages[String(collectiveID)] ?? []).filter {
+            !remoteIDs.contains($0.id) && (documents[String($0.id)]?.hasLocalChanges ?? false)
+        }
+        pages[String(collectiveID)] = remote + retained
+        documents = documents.filter {
+            $0.value.collectiveID != collectiveID || remoteIDs.contains($0.value.page.id) || $0.value.hasLocalChanges
+        }
+        for page in remote {
+            documents[String(page.id)]?.page = page
+            documents[String(page.id)]?.collectiveID = collectiveID
+        }
+    }
+}
 public enum CollectivesError: Error, LocalizedError, Sendable {
     case invalidServer, unsafeURL, http(Int), invalidResponse, missingETag, conflict, missingDocument, credential(Int32)
     public var errorDescription: String? {

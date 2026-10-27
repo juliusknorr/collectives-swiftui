@@ -55,13 +55,7 @@ public enum PageCreator {
             if !pages.contains(where: { $0.id == created.id }) { pages.append(created) }
         } catch { warnings.append("Refresh the page list to update parent paths. \(error.localizedDescription)") }
         var next = snapshot
-        next.pages[String(collectiveID)] = pages
-        for page in pages {
-            if var cached = next.documents[String(page.id)], cached.collectiveID == collectiveID {
-                cached.page = page
-                next.documents[String(page.id)] = cached
-            }
-        }
+        next.replacePages(pages, collectiveID: collectiveID)
         let page = pages.first { $0.id == created.id } ?? created
         if next.documents[String(page.id)] == nil {
             do {
