@@ -18,14 +18,14 @@ struct DocumentHeader: View {
                     }
                 }
                 .buttonStyle(.plain).help("Change page icon")
-                .accessibilityLabel("Change page icon").disabled(model.busy || !model.canEdit)
+                .accessibilityLabel("Change page icon").disabled(model.busy || model.syncing || !model.canEdit)
                 .popover(isPresented: $showIcons) {
                     PageEmojiPicker(current: page.emoji) { emoji in
                         Task {
                             do { try await model.setEmoji(emoji); showIcons = false }
                             catch { self.error = error.localizedDescription }
                         }
-                    }.disabled(model.busy)
+                    }.disabled(model.busy || model.syncing)
                 }
                 Text(page.title)
                     .font(.system(size: 32, weight: .bold))
@@ -55,11 +55,19 @@ struct DocumentHeader: View {
         } message: { Text(error ?? "") }
     }
     private var status: String {
+        if model.draftSaveFailed { return "Changes could not be saved on this device" }
+        if model.savingDraft { return "Saving changes on this device…" }
         if model.document?.conflict != nil { return "Conflicting edits need review" }
+        if model.syncing { return "Syncing with Nextcloud…" }
+        if let id = model.activeID, model.syncIssues[id] != nil { return "Available offline · Sync needs attention" }
         return model.document?.draft == nil ? "Available offline" : "Draft saved on this device"
     }
     private var statusIcon: String {
+        if model.draftSaveFailed { return "exclamationmark.triangle" }
+        if model.savingDraft { return "externaldrive" }
         if model.document?.conflict != nil { return "exclamationmark.triangle" }
+        if model.syncing { return "arrow.triangle.2.circlepath" }
+        if let id = model.activeID, model.syncIssues[id] != nil { return "exclamationmark.icloud" }
         return model.document?.draft == nil ? "checkmark.icloud" : "pencil.circle"
     }
 }
@@ -260,7 +268,7 @@ struct NewPageSheet: View {
                     .keyboardShortcut(.cancelAction).disabled(submitting)
                 Button("Create") { create() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(!validTitle || submitting || unconfirmed || model.busy)
+                    .disabled(!validTitle || submitting || unconfirmed || model.busy || model.syncing)
             }
         }
         .padding(24).frame(idealWidth: 440)
@@ -313,7 +321,7 @@ struct RenamePageSheet: View {
     }
     private var canRename: Bool {
         guard let normalized = try? PageCreator.title(title) else { return false }
-        return normalized != request.page.title && !submitting && !unconfirmed && !model.busy
+        return normalized != request.page.title && !submitting && !unconfirmed && !model.busy && !model.syncing
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {

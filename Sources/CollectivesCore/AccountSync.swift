@@ -11,6 +11,15 @@ public struct AccountSyncFailure: Sendable {
     public let collectiveID: Int
     public let pageID: Int?
     public let message: String
+    public let requiresSignIn: Bool
+
+    init(collectiveID: Int, pageID: Int?, error: any Error) {
+        self.collectiveID = collectiveID
+        self.pageID = pageID
+        message = error.localizedDescription
+        if case CollectivesError.http(401) = error { requiresSignIn = true }
+        else { requiresSignIn = false }
+    }
 }
 
 public struct AccountSyncResult: Sendable {
@@ -38,7 +47,7 @@ public enum AccountSynchronizer {
                 pages = try await api.pages(collectiveID: collective.id)
             } catch {
                 try rethrowCancellation(error)
-                failures.append(AccountSyncFailure(collectiveID: collective.id, pageID: nil, message: error.localizedDescription))
+                failures.append(AccountSyncFailure(collectiveID: collective.id, pageID: nil, error: error))
                 continue
             }
             try await synchronize(pages: pages, collectiveID: collective.id, uploadDrafts: true,
@@ -85,7 +94,7 @@ public enum AccountSynchronizer {
                 }
             } catch {
                 try rethrowCancellation(error)
-                failures.append(AccountSyncFailure(collectiveID: collectiveID, pageID: page.id, message: error.localizedDescription))
+                failures.append(AccountSyncFailure(collectiveID: collectiveID, pageID: page.id, error: error))
             }
             try await checkpoint(updated)
         }

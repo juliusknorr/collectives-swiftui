@@ -52,9 +52,9 @@ struct CollectivesApp: App {
             PageNavigationCommands()
             CommandGroup(after: .newItem) {
                 Button("Sync Current Page") { Task { await model.sync() } }
-                    .keyboardShortcut("s").disabled(model.busy || model.selectedPage == nil)
+                    .keyboardShortcut("s").disabled(model.busy || model.syncing || model.selectedPage == nil)
                 Button("Sync All Accounts") { Task { await model.syncAccounts() } }
-                    .keyboardShortcut("s", modifiers: [.command, .shift]).disabled(model.busy)
+                    .keyboardShortcut("s", modifiers: [.command, .shift]).disabled(model.busy || model.syncing)
                 Toggle("Automatically Sync Active Account", isOn: $automaticSync)
             }
         }
@@ -77,6 +77,8 @@ final class AppModel {
     var text = ""
     var message = "Add an account to get started."
     var busy = false
+    var syncing = false
+    var syncIssues: [UUID: SyncIssue] = [:]
     var showLogin = false
     var settingsLogin = false
     var loginServer = "https://"
@@ -93,6 +95,12 @@ final class AppModel {
     private var automaticSyncGeneration: UUID?
     private var pendingPersistence: Task<Void, Never>?
     private var persistenceFailed = false
+    var savingDraft = false
+    var draftSaveFailed: Bool { persistenceFailed }
+    private var editGeneration = UUID()
+    private var syncBaselines: [UUID: AccountSnapshot] = [:]
+    private var checkpointSnapshots: [UUID: AccountSnapshot] = [:]
+    private var checkpointVersions: [UUID: Int] = [:]
     private var lastEdit = Date.distantPast
 
     init(store: LocalStore? = nil, preferences: LibraryPreferences = LibraryPreferences(),
@@ -114,6 +122,21 @@ final class AppModel {
     var conflictCount: Int { snapshot.documents.values.filter { $0.conflict != nil }.count }
     var downloadedCount: Int { pages.filter { snapshot.documents[String($0.id)] != nil }.count }
     var canEdit: Bool { snapshot.collectives.first { $0.id == selectedCollective }?.canEdit == true }
+    var syncSummary: String {
+        if savingDraft { return "Saving locally…" }
+        if draftSaveFailed { return "Changes not saved" }
+        if syncing { return "Syncing…" }
+        if let id = activeID, let issue = syncIssues[id] {
+            return issue.requiresSignIn ? "Sign in to sync" : "Sync needs attention"
+        }
+        if conflictCount > 0 { return "\(conflictCount) \(conflictCount == 1 ? "conflict" : "conflicts") to review" }
+        return pendingCount == 0 ? "No pending drafts" : "\(pendingCount) pending \(pendingCount == 1 ? "draft" : "drafts")"
+    }
+    var syncSymbol: String {
+        if draftSaveFailed || conflictCount > 0 { return "exclamationmark.triangle" }
+        if let id = activeID, syncIssues[id] != nil { return "exclamationmark.icloud" }
+        return pendingCount > 0 ? "pencil.circle" : "checkmark.icloud"
+    }
 
     func start() async {
         guard !started else { return }; started = true
@@ -150,10 +173,14 @@ final class AppModel {
         _ = await loadAccount(id)
     }
     private func loadAccount(_ id: UUID) async -> Bool {
-        let loaded: AccountSnapshot
-        do { loaded = try await store.snapshot(accountID: id) }
-        catch { message = error.localizedDescription; return false }
         if let previousID = activeID { accountCollectives[previousID] = snapshot.collectives }
+        let version = checkpointVersions[id, default: 0]
+        let loaded: AccountSnapshot
+        do {
+            await pendingPersistence?.value
+            let stored = try await store.snapshot(accountID: id)
+            loaded = checkpointVersions[id, default: 0] == version ? stored : checkpointSnapshots[id] ?? stored
+        } catch { message = error.localizedDescription; return false }
         activeID = id; selectedCollective = nil; selectedPage = nil; text = ""
         snapshot = loaded
         accountCollectives[id] = loaded.collectives
@@ -167,6 +194,7 @@ final class AppModel {
             collectiveListingErrors[id] = nil
         } catch {
             collectiveListingErrors[id] = error.localizedDescription
+            syncIssues[id] = SyncIssue(error: error)
             message = "Using cached content. \(error.localizedDescription)"
         }
         return true
@@ -180,7 +208,7 @@ final class AppModel {
     }
     func refresh(excludingActive: Bool = false) async {
         let targets = accounts.filter { !excludingActive || $0.id != activeID }
-        guard !busy, !targets.isEmpty else { return }
+        guard !busy, !syncing, !targets.isEmpty else { return }
         busy = true; defer { busy = false }
         await pendingPersistence?.value
         guard !persistenceFailed else { message = "Save the current draft before refreshing collectives."; return }
@@ -231,7 +259,10 @@ final class AppModel {
         do {
             snapshot.replacePages(try await client().pages(collectiveID: id), collectiveID: id)
             try await persist(); message = "Select a page."
-        } catch { message = "Using cached pages. \(error.localizedDescription)" }
+        } catch {
+            if let id = activeID { syncIssues[id] = SyncIssue(error: error) }
+            message = "Using cached pages. \(error.localizedDescription)"
+        }
     }
     func openPage(_ page: Page) async {
         guard !busy else { return }
@@ -248,7 +279,7 @@ final class AppModel {
         let key = String(page.id)
         if let cached = snapshot.documents[key] {
             text = cached.draft ?? cached.markdown
-            message = cached.conflict != nil ? "Conflict: local draft preserved. Review the server copy below." :
+            message = cached.conflict != nil ? "Conflict: local draft preserved. Choose Review Changes to compare versions." :
                 (cached.draft != nil ? "Local draft waiting to sync." : "Downloaded page. Refresh from server to check for updates.")
             return
         }
@@ -278,6 +309,8 @@ final class AppModel {
         snapshot.documents[String(page.id)] = doc
         guard let id = activeID else { return }
         let saved = snapshot
+        let generation = UUID()
+        editGeneration = generation; savingDraft = true
         let previous = pendingPersistence
         message = "Saving draft locally…"
         pendingPersistence = Task {
@@ -285,28 +318,32 @@ final class AppModel {
             do {
                 try await store.saveSnapshot(saved, accountID: id)
                 persistenceFailed = false
-                if activeID == id { message = "Draft saved locally; waiting to sync." }
-            } catch { persistenceFailed = true; message = "Draft not saved: \(error.localizedDescription)" }
+                if editGeneration == generation { savingDraft = false }
+                if activeID == id && editGeneration == generation { message = "Draft saved locally; waiting to sync." }
+            } catch { savingDraft = false; persistenceFailed = true; message = "Draft not saved: \(error.localizedDescription)" }
         }
     }
     func sync() async {
-        guard !busy, let page = selectedPage else { return }
-        busy = true; defer { busy = false }
+        guard !busy, !syncing, let page = selectedPage, let target = account else { return }
+        syncing = true; defer { syncing = false; syncBaselines = [:] }
         await pendingPersistence?.value
-        guard !persistenceFailed, let doc = snapshot.documents[String(page.id)] else { return }
-        guard doc.conflict == nil else { message = "Resolve the conflict before syncing."; return }
+        guard !persistenceFailed, activeID == target.id, selectedPage?.id == page.id,
+              let doc = snapshot.documents[String(page.id)] else { return }
+        guard doc.conflict == nil else { message = "Review the conflict before syncing."; return }
+        let base = snapshot
         do {
-            let updated = try await DocumentSynchronizer.synchronize(document: doc, api: client())
-            var next = snapshot
+            let updated = try await DocumentSynchronizer.synchronize(document: doc, api: client(for: target))
+            var next = base
             next.documents[String(page.id)] = updated
-            guard let id = activeID else { return }
-            try await store.saveSnapshot(next, accountID: id)
-            snapshot = next; text = updated.draft ?? updated.markdown
-            message = updated.conflict == nil ? "Synced with server." : "Server changed. Local draft preserved for review."
-        } catch { message = "Draft retained. \(error.localizedDescription)" }
+            try await applySync(next, startedFrom: base, accountID: target.id)
+            syncIssues[target.id] = nil
+            if activeID == target.id, selectedPage?.id == page.id {
+                message = document?.conflict == nil ? "Synced with server." : "Server changed. Your changes are saved for review."
+            }
+        } catch { syncIssues[target.id] = SyncIssue(error: error) }
     }
     func downloadCollective() async {
-        guard !busy, let collectiveID = selectedCollective, let id = activeID else { return }
+        guard !busy, !syncing, let collectiveID = selectedCollective, let id = activeID else { return }
         busy = true; defer { busy = false }
         await pendingPersistence?.value
         guard !persistenceFailed else { return }
@@ -331,42 +368,61 @@ final class AppModel {
     }
     @discardableResult
     func syncAccounts(automatic: Bool = false) async -> Bool {
-        guard !busy, !showLogin, !settingsLogin else { return false }
+        guard !busy, !syncing, !showLogin, !settingsLogin else { return false }
         if automatic && Date().timeIntervalSince(lastEdit) < 5 { return false }
-        busy = true; defer { busy = false }
+        syncing = true; defer { syncing = false; syncBaselines = [:] }
         await pendingPersistence?.value
         guard !persistenceFailed else { return false }
         let targets = automatic ? accounts.filter { $0.id == activeID } : accounts
-        var failures = 0
         for target in targets {
             if Task.isCancelled { return false }
             do {
-                let local = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
-                let localStore = store
-                let result = try await AccountSynchronizer.synchronize(snapshot: local, api: client(for: target)) { value in
-                    try await localStore.saveSnapshot(value, accountID: target.id)
+                let base = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
+                let result = try await AccountSynchronizer.synchronize(snapshot: base, api: client(for: target)) { value in
+                    try await self.applySync(value, startedFrom: base, accountID: target.id)
                 }
-                accountCollectives[target.id] = result.snapshot.collectives
-                if target.id == activeID {
-                    snapshot = result.snapshot
-                    reconcileSelection()
-                }
-                failures += result.failures.count
                 collectiveListingErrors[target.id] = result.failures.first?.message
+                if let failure = result.failures.first {
+                    syncIssues[target.id] = SyncIssue(message: failure.message,
+                        requiresSignIn: result.failures.contains(where: \.requiresSignIn))
+                } else { syncIssues[target.id] = nil }
             } catch {
-                // A failed request or cancellation may follow successful persisted pages.
-                if let saved = try? await store.snapshot(accountID: target.id) {
-                    accountCollectives[target.id] = saved.collectives
-                    if target.id == activeID { snapshot = saved; reconcileSelection() }
-                }
                 if Task.isCancelled { return false }
                 collectiveListingErrors[target.id] = error.localizedDescription
-                failures += 1
+                syncIssues[target.id] = SyncIssue(error: error)
             }
         }
-        message = failures == 0 ? "Synced with server." :
-            "Sync incomplete; \(failures) items need retry. Cached pages and unsynced work are retained."
         return true
+    }
+
+    private func applySync(_ remote: AccountSnapshot, startedFrom base: AccountSnapshot, accountID: UUID) async throws {
+        // Flush local writes before reading an account that may no longer be active.
+        await pendingPersistence?.value
+        let current: AccountSnapshot
+        if accountID == activeID { current = snapshot }
+        else {
+            let stored = try await store.snapshot(accountID: accountID)
+            current = accountID == activeID ? snapshot : stored
+        }
+        let merged = current.mergingSync(remote, startedFrom: syncBaselines[accountID] ?? base)
+        syncBaselines[accountID] = remote
+        checkpointVersions[accountID, default: 0] += 1
+        checkpointSnapshots[accountID] = merged
+        accountCollectives[accountID] = merged.collectives
+        if accountID == activeID {
+            snapshot = merged
+            reconcileSelection()
+        }
+        let previous = pendingPersistence
+        let save = Task { @MainActor in
+            await previous?.value
+            try await store.saveSnapshot(merged, accountID: accountID)
+        }
+        pendingPersistence = Task {
+            do { try await save.value }
+            catch { persistenceFailed = true; message = "Draft not saved: \(error.localizedDescription)" }
+        }
+        try await save.value
     }
     private func reconcileSelection() {
         if let selected = selectedPage {
@@ -468,53 +524,49 @@ final class AppModel {
         }
     }
     func syncPending(automatic: Bool = false) async {
-        guard !busy, !showLogin, !settingsLogin else { return }
+        guard !busy, !syncing, !showLogin, !settingsLogin else { return }
         if automatic {
             guard Date().timeIntervalSince(lastEdit) >= 5,
                   snapshot.documents.values.contains(where: { $0.draft != nil && $0.conflict == nil }) else { return }
         }
-        busy = true; defer { busy = false }
+        syncing = true; defer { syncing = false; syncBaselines = [:] }
         await pendingPersistence?.value
         guard !persistenceFailed else { return }
         let targets = automatic ? accounts.filter { $0.id == activeID } : accounts
-        var synced = 0; var conflicts = 0; var failures = 0
         for target in targets {
-            if Task.isCancelled { break }
             do {
-                var local = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
-                let pending = local.documents.keys.sorted().filter { local.documents[$0]?.draft != nil }
-                guard !pending.isEmpty else { continue }
+                let base = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
+                var remote = base
                 let api = try client(for: target)
-                for key in pending {
+                for key in base.documents.keys.sorted() {
                     try Task.checkCancellation()
-                    guard let doc = local.documents[key] else { continue }
-                    if doc.conflict != nil { conflicts += 1; continue }
-                    let updated = try await DocumentSynchronizer.synchronize(document: doc, api: api)
-                    var next = local
-                    next.documents[key] = updated
-                    try await store.saveSnapshot(next, accountID: target.id)
-                    local = next
-                    if target.id == activeID { snapshot = next; updateEditor() }
-                    if updated.conflict != nil { conflicts += 1 } else { synced += 1 }
+                    guard let doc = base.documents[key], doc.draft != nil, doc.conflict == nil else { continue }
+                    remote.documents[key] = try await DocumentSynchronizer.synchronize(document: doc, api: api)
+                    try await applySync(remote, startedFrom: base, accountID: target.id)
                 }
-            } catch is CancellationError { break }
-            catch { failures += 1 }
+                // Draft-only sync cannot establish that a previous account refresh error has recovered.
+            } catch {
+                if Task.isCancelled { return }
+                syncIssues[target.id] = SyncIssue(error: error)
+            }
         }
-        message = "Synced \(synced) drafts; \(conflicts) conflicts; \(failures) accounts need retry. Unsynced work is retained."
     }
     private func updateEditor() {
         if let doc = document { text = doc.draft ?? doc.markdown }
     }
     func resolveConflict(useServer: Bool) async {
-        guard !busy, let page = selectedPage, var doc = document, let remote = doc.conflict else { return }
+        guard !busy, !syncing, let page = selectedPage, var doc = document, let remote = doc.conflict else { return }
         busy = true; defer { busy = false }
         await pendingPersistence?.value
         let local = doc.draft ?? text
         doc.markdown = remote.markdown; doc.etag = remote.etag
         doc.draft = useServer ? nil : local; doc.conflict = nil
-        snapshot.documents[String(page.id)] = doc
+        var next = snapshot
+        next.documents[String(page.id)] = doc
         do {
-            try await persist(); text = doc.draft ?? doc.markdown
+            guard let id = activeID else { return }
+            try await store.saveSnapshot(next, accountID: id)
+            snapshot = next; text = doc.draft ?? doc.markdown
             message = useServer ? "Server version selected." : "Local version queued against reviewed server revision."
         } catch { message = error.localizedDescription }
     }
@@ -531,7 +583,7 @@ final class AppModel {
         return String(decoding: try encoder.encode(saved), as: UTF8.self)
     }
     func removeAccount(_ id: UUID) async throws {
-        guard !busy else { throw CollectivesError.invalidResponse }
+        guard !busy, !syncing else { throw CollectivesError.invalidResponse }
         busy = true
         defer { busy = false }
         await pendingPersistence?.value
@@ -542,6 +594,8 @@ final class AppModel {
         accountCollectives[id] = nil
         collectiveListingErrors[id] = nil
         clients[id] = nil
+        checkpointSnapshots[id] = nil; checkpointVersions[id] = nil
+        syncIssues[id] = nil
         preferences.remove(accountID: id)
         if activeID == id {
             activeID = nil; snapshot = AccountSnapshot()
@@ -600,7 +654,7 @@ final class AppModel {
         return true
     }
     func setEmoji(_ emoji: String?) async throws {
-        guard !busy, canEdit, let page = selectedPage, let collectiveID = selectedCollective,
+        guard !busy, !syncing, canEdit, let page = selectedPage, let collectiveID = selectedCollective,
               let accountID = activeID else { throw CollectivesError.invalidResponse }
         busy = true; defer { busy = false }
         await pendingPersistence?.value
@@ -613,7 +667,7 @@ final class AppModel {
         snapshot = next; selectedPage = updated
     }
     func createPage(title: String, parentID: Int, collectiveID: Int, accountID: UUID) async throws {
-        guard !busy, activeID == accountID, selectedCollective == collectiveID, canEdit else {
+        guard !busy, !syncing, activeID == accountID, selectedCollective == collectiveID, canEdit else {
             throw CollectivesError.invalidResponse
         }
         busy = true; defer { busy = false }
@@ -636,7 +690,7 @@ final class AppModel {
         }
     }
     func renamePage(title: String, pageID: Int, collectiveID: Int, accountID: UUID) async throws {
-        guard !busy, activeID == accountID, selectedCollective == collectiveID, canEdit else {
+        guard !busy, !syncing, activeID == accountID, selectedCollective == collectiveID, canEdit else {
             throw CollectivesError.invalidResponse
         }
         busy = true; defer { busy = false }
@@ -656,7 +710,7 @@ final class AppModel {
         }
     }
     func addAccount(_ login: LoginCredentials) async throws {
-        guard !busy else { throw CollectivesError.invalidResponse }
+        guard !busy, !syncing else { throw CollectivesError.invalidResponse }
         busy = true; defer { busy = false }
         await pendingPersistence?.value
         guard !persistenceFailed else { throw CollectivesError.invalidResponse }
@@ -668,6 +722,7 @@ final class AppModel {
         let new = Account(id: existing?.id ?? UUID(), serverURL: server, userID: userID)
         try credentials.save(credential, accountID: new.id)
         clients[new.id] = nil
+        syncIssues[new.id] = nil
         if existing == nil { accounts.append(new) }
         try await store.saveAccounts(accounts)
         busy = false
@@ -696,6 +751,7 @@ struct ContentView: View {
     @State private var editing = false
     @State private var showingOutline = false
     @State private var showingFind = false
+    @State private var conflictReview: ConflictReviewRequest?
     @State private var compactColumn: NavigationSplitViewColumn = .sidebar
     var body: some View {
         Group {
@@ -744,6 +800,9 @@ struct ContentView: View {
             }
         }
         .sheet(item: $renamePageRequest) { request in RenamePageSheet(model: model, request: request) }
+        .sheet(item: $conflictReview) { review in
+            ConflictReviewSheet(model: model, review: review)
+        }
         .sheet(isPresented: $model.showLogin) { LoginView(model: model) }
         #if !os(macOS)
         .sheet(isPresented: $showSettings) { AppSettingsView(model: model) }
@@ -808,7 +867,7 @@ struct ContentView: View {
         .toolbar {
             Button("New Page", systemImage: "square.and.pencil") { beginNewPage() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
-                .disabled(model.busy || !model.canEdit || model.pages.isEmpty)
+                .disabled(model.busy || model.syncing || !model.canEdit || model.pages.isEmpty)
             Menu {
                 Button("New Page…", systemImage: "doc.badge.plus") { beginNewPage() }
                     .disabled(!model.canEdit || model.pages.isEmpty)
@@ -820,7 +879,7 @@ struct ContentView: View {
                     if let id = model.selectedCollective { Task { await model.openCollective(id) } }
                 }
             } label: { Label("Collective Actions", systemImage: "ellipsis.circle") }
-                .disabled(model.busy || model.selectedCollective == nil)
+                .disabled(model.busy || model.syncing || model.selectedCollective == nil)
         }
     }
     private var detailContent: some View {
@@ -850,14 +909,14 @@ struct ContentView: View {
                         }
                         .id("\(model.activeID?.uuidString ?? "")/\(page.id)")
                 }
-                if let remote = model.document?.conflict {
-                    DisclosureGroup("Compare server version") {
-                        ScrollView { Text(remote.markdown).font(.system(.body, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 180)
-                    }
+                if model.document?.conflict != nil {
                     HStack {
-                        Button("Queue Local Version") { Task { await model.resolveConflict(useServer: false) } }
-                        Button("Use Server Version", role: .destructive) { Task { await model.resolveConflict(useServer: true) } }
-                    }.disabled(model.busy)
+                        Label("This page has conflicting changes.", systemImage: "exclamationmark.triangle")
+                        Spacer()
+                        Button("Review Changes…") { conflictReview = ConflictReviewRequest(model: model) }
+                            .disabled(model.busy || model.syncing)
+                    }
+                    .padding(12).background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
                 }
             } else if let page = model.selectedPage, !model.busy {
                 ContentUnavailableView {
@@ -874,6 +933,7 @@ struct ContentView: View {
             } else {
                 ContentUnavailableView("Select a Page", systemImage: "doc.text", description: Text("Choose a page to read, or download this collective for offline editing."))
             }
+            SyncStatusView(model: model)
             if model.busy { ProgressView() }
             Text(model.message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -897,7 +957,7 @@ struct ContentView: View {
                     }
                     .labelStyle(.iconOnly)
                     .help(model.document?.draft == nil ? "Reload page from server" : "Sync page, preserving conflicting edits")
-                    .disabled(model.busy)
+                    .disabled(model.busy || model.syncing)
                 }
                 #if os(macOS)
                 ToolbarItem(placement: .primaryAction) { Spacer() }
@@ -1016,9 +1076,9 @@ struct ContentView: View {
             Button(model.library.favoritePageIDs.contains(page.id) ? "Remove from Favorites" : "Add to Favorites", systemImage: "star") { model.toggleFavorite(page.id) }
             Button("Open Page", systemImage: "doc.text") { Task { await model.openPage(page) } }
             Button("Rename…", systemImage: "pencil") { beginRename(page) }
-                .disabled(model.busy || !model.canEdit || page.parentId == 0)
+                .disabled(model.busy || model.syncing || !model.canEdit || page.parentId == 0)
             Button("New Subpage…", systemImage: "doc.badge.plus") { beginNewPage(parent: page) }
-                .disabled(model.busy || !model.canEdit)
+                .disabled(model.busy || model.syncing || !model.canEdit)
         }
         .help(([collectiveTitle] + pagePath(page).map { $0.title } + [page.title]).joined(separator: " › "))
     }
@@ -1087,9 +1147,9 @@ struct ContentView: View {
     }
     private var sidebarFooter: some View {
         HStack(spacing: 8) {
-            if model.busy { ProgressView().controlSize(.small) }
-            else { Image(systemName: model.conflictCount > 0 ? "exclamationmark.triangle" : "checkmark.icloud").foregroundStyle(.secondary) }
-            Text(model.pendingCount == 0 ? "No pending drafts" : "\(model.pendingCount) pending drafts")
+            if model.busy || model.syncing { ProgressView().controlSize(.small) }
+            else { Image(systemName: model.syncSymbol).foregroundStyle(.secondary) }
+            Text(model.syncSummary)
                 .font(.caption).foregroundStyle(.secondary)
             Spacer(minLength: 0)
             Menu {
@@ -1099,7 +1159,7 @@ struct ContentView: View {
                 Toggle("Auto-sync Active Account", isOn: $automaticSync)
             } label: { Image(systemName: "arrow.triangle.2.circlepath") }
                 .buttonStyle(.plain).menuIndicator(.hidden)
-                .fixedSize().disabled(model.busy)
+                .fixedSize().disabled(model.busy || model.syncing)
                 .accessibilityLabel("Sync Actions")
             #if os(macOS)
             SettingsLink { Image(systemName: "gearshape") }

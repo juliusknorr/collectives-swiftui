@@ -75,7 +75,7 @@ struct AppSettingsView: View {
             } footer: {
                 Text("Each account has its own offline pages and drafts. Removing an account clears its credentials and downloads on this device. Accounts with unsynced drafts or conflicts must be synced or resolved first.")
             }
-            .disabled(model.busy || working)
+            .disabled(model.busy || model.syncing || working)
             if let backup {
                 Section("Source Backup") {
                     ShareLink("Save Account Backup…", item: backup)
