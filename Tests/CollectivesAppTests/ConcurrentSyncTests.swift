@@ -123,12 +123,20 @@ private final class ConcurrentSyncFixture {
     await fixture.transport.waitForDocumentRequest()
     #expect(fixture.model.syncing)
     #expect(!fixture.model.busy)
+    #expect(fixture.model.syncActivity?.account.id == fixture.accounts[0].id)
+    #expect(fixture.model.syncActivity?.accountIndex == 1)
+    #expect(fixture.model.syncActivity?.accountTotal == 1)
+    #expect(fixture.model.syncActivity?.progress.phase == .checking)
+    #expect(fixture.model.syncActivity?.progress.page?.id == 70)
+    #expect(fixture.model.syncActivity?.progress.completedPages == 0)
+    #expect(fixture.model.syncActivity?.progress.totalPages == 1)
     fixture.model.edited("typed while syncing")
     #expect(fixture.model.text == "typed while syncing")
     await fixture.transport.respond()
     await sync.value
     #expect(!fixture.model.syncing)
     #expect(!fixture.model.busy)
+    #expect(fixture.model.syncActivity == nil)
 }
 
 @MainActor
@@ -137,9 +145,12 @@ private final class ConcurrentSyncFixture {
     defer { fixture.cleanup() }
     let sync = Task { await fixture.model.sync() }
     await fixture.transport.waitForDocumentRequest()
+    #expect(fixture.model.syncActivity?.progress.phase == .uploading)
+    #expect(fixture.model.syncActivity?.progress.page?.id == 70)
     fixture.model.edited("newer draft typed during upload")
     await fixture.transport.respond(status: 204, body: "")
     await sync.value
+    #expect(fixture.model.syncActivity == nil)
     #expect(fixture.model.text == "newer draft typed during upload")
     #expect(fixture.model.document?.markdown == "uploaded draft")
     #expect(fixture.model.document?.draft == "newer draft typed during upload")
@@ -172,12 +183,14 @@ private final class ConcurrentSyncFixture {
     let sync = Task { await fixture.model.sync() }
     await fixture.transport.waitForDocumentRequest()
     await fixture.model.selectAccount(fixture.accounts[1].id)
+    #expect(fixture.model.syncActivity?.account.id == fixture.accounts[0].id)
     fixture.model.selectedCollective = 7
     await fixture.model.openPage(fixture.pages[0])
     #expect(fixture.model.activeID == fixture.accounts[1].id)
     #expect(fixture.model.text == "second page 70")
     await fixture.transport.respond(body: "first account remote response")
     await sync.value
+    #expect(fixture.model.syncActivity == nil)
     #expect(fixture.model.activeID == fixture.accounts[1].id)
     #expect(fixture.model.text == "second page 70")
     #expect(fixture.model.document?.markdown == "second page 70")
@@ -216,14 +229,18 @@ private final class ConcurrentSyncFixture {
     #expect(fixture.model.text == "first page 70")
     #expect(fixture.model.document?.markdown == "first page 70")
     #expect(!fixture.model.syncing)
+    #expect(fixture.model.syncActivity == nil)
 
     await fixture.transport.suspendNextRequest()
     let retry = Task { await fixture.model.sync() }
     await fixture.transport.waitForDocumentRequest()
+    #expect(fixture.model.syncActivity?.account.id == fixture.accounts[0].id)
+    #expect(fixture.model.syncActivity?.progress.phase == .checking)
     await fixture.transport.respond(body: "content after signing in again")
     await retry.value
     #expect(fixture.model.syncIssues[fixture.accounts[0].id] == nil)
     #expect(fixture.model.text == "content after signing in again")
+    #expect(fixture.model.syncActivity == nil)
 }
 
 @MainActor
@@ -234,12 +251,21 @@ private final class ConcurrentSyncFixture {
     await fixture.transport.waitForDocumentRequest()
     #expect(fixture.model.syncing)
     #expect(!fixture.model.busy)
+    #expect(fixture.model.syncActivity?.account.id == fixture.accounts[0].id)
+    #expect(fixture.model.syncActivity?.accountIndex == 1)
+    #expect(fixture.model.syncActivity?.accountTotal == 1)
+    #expect(fixture.model.syncActivity?.progress.collective?.id == 7)
+    #expect(fixture.model.syncActivity?.progress.page?.id == 70)
+    #expect(fixture.model.syncActivity?.progress.totalPages == 2)
     fixture.model.edited("draft typed during account refresh")
     await fixture.transport.respond(body: "refreshed server copy", suspendNext: true)
     await fixture.transport.waitForDocumentRequest()
 
     // The second document request starts after the first document's checkpoint is saved.
     #expect(!fixture.model.busy)
+    #expect(fixture.model.syncActivity?.progress.phase == .checking)
+    #expect(fixture.model.syncActivity?.progress.page?.id == 71)
+    #expect(fixture.model.syncActivity?.progress.completedPages == 1)
     #expect(fixture.model.text == "draft typed during account refresh")
     #expect(fixture.model.document?.draft == "draft typed during account refresh")
     let competingRemote = RemoteDocument(markdown: "refreshed server copy", etag: "\"updated\"")
@@ -256,6 +282,7 @@ private final class ConcurrentSyncFixture {
     #expect(await sync.value)
     #expect(!fixture.model.syncing)
     #expect(!fixture.model.busy)
+    #expect(fixture.model.syncActivity == nil)
     #expect(fixture.model.text == "draft typed during account refresh")
     #expect(fixture.model.document?.markdown == "first page 70")
     #expect(fixture.model.document?.etag == "\"base\"")
@@ -288,4 +315,24 @@ func resolvingConflictPersistsChosenVersion(useServer: Bool) async throws {
     #expect(saved.documents["70"]?.draft == expectedDraft)
     #expect(saved.documents["70"]?.markdown == "reviewed server copy")
     #expect(saved.documents["70"]?.etag == "\"reviewed\"")
+}
+
+@MainActor
+@Test func manualAccountSyncProgressFollowsEachAccount() async throws {
+    let fixture = try await ConcurrentSyncFixture()
+    defer { fixture.cleanup() }
+    let sync = Task { await fixture.model.syncAccounts() }
+    await fixture.transport.waitForDocumentRequest()
+    #expect(fixture.model.syncActivity?.accountTotal == 2)
+    #expect(fixture.model.syncActivity?.accountIndex == 1)
+    await fixture.transport.respond(suspendNext: true)
+    await fixture.transport.waitForDocumentRequest()
+    await fixture.transport.respond(suspendNext: true)
+    await fixture.transport.waitForDocumentRequest()
+    #expect(fixture.model.syncActivity?.account.id == fixture.accounts[1].id)
+    #expect(fixture.model.syncActivity?.accountIndex == 2)
+    #expect(fixture.model.syncActivity?.accountTotal == 2)
+    await fixture.transport.respond()
+    #expect(await sync.value)
+    #expect(fixture.model.syncActivity == nil)
 }

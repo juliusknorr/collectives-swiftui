@@ -91,6 +91,7 @@ private final class StartupFixture {
     defer { fixture.cleanup() }
     await fixture.model.start()
     #expect(fixture.model.startupComplete)
+    #expect(fixture.model.syncActivity == nil)
     for account in fixture.accounts {
         let saved = try await fixture.store.snapshot(accountID: account.id)
         #expect(saved.collectives.map(\.id) == [7, 8])

@@ -78,6 +78,7 @@ final class AppModel {
     var message = ""
     var busy = false
     var syncing = false
+    var syncActivity: SyncActivity?
     var syncIssues: [UUID: SyncIssue] = [:]
     var showLogin = false
     var settingsLogin = false
@@ -125,6 +126,7 @@ final class AppModel {
     var syncSummary: String {
         if savingDraft { return "Saving locally…" }
         if draftSaveFailed { return "Changes not saved" }
+        if let activity = syncActivity { return activity.summary }
         if syncing { return "Syncing…" }
         if let id = activeID, let issue = syncIssues[id] {
             return issue.requiresSignIn ? "Sign in to sync" : "Sync needs attention"
@@ -327,16 +329,25 @@ final class AppModel {
     }
     func sync() async {
         guard !busy, !syncing, let page = selectedPage, let target = account else { return }
-        syncing = true; defer { syncing = false; syncBaselines = [:] }
+        syncing = true; defer { syncing = false; syncActivity = nil; syncBaselines = [:] }
         await pendingPersistence?.value
         guard !persistenceFailed, activeID == target.id, selectedPage?.id == page.id,
               let doc = snapshot.documents[String(page.id)] else { return }
         guard doc.conflict == nil else { message = "Review the conflict before syncing."; return }
         let base = snapshot
+        syncActivity = SyncActivity(account: target, accountIndex: 1, accountTotal: 1,
+            progress: AccountSyncProgress(phase: doc.draft == nil ? .checking : .uploading,
+                collective: snapshot.collectives.first { $0.id == doc.collectiveID }, page: page,
+                totalPages: 1, totalCollectives: 1))
         do {
             let updated = try await DocumentSynchronizer.synchronize(document: doc, api: client(for: target))
             var next = base
             next.documents[String(page.id)] = updated
+            if let activity = syncActivity {
+                var progress = activity.progress
+                progress.phase = .saving
+                syncActivity = SyncActivity(account: target, accountIndex: 1, accountTotal: 1, progress: progress)
+            }
             try await applySync(next, startedFrom: base, accountID: target.id)
             syncIssues[target.id] = nil
             if activeID == target.id, selectedPage?.id == page.id {
@@ -346,14 +357,16 @@ final class AppModel {
     }
     func downloadCollective() async {
         guard !busy, !syncing, let collectiveID = selectedCollective, let id = activeID else { return }
-        busy = true; defer { busy = false }
+        busy = true; defer { busy = false; syncActivity = nil }
         await pendingPersistence?.value
-        guard !persistenceFailed else { return }
+        guard !persistenceFailed, let target = account else { return }
         message = "Downloading page text for offline use…"
         let previous = snapshot
         do {
             let localStore = store
-            let result = try await AccountSynchronizer.download(collectiveID: collectiveID, snapshot: snapshot, api: client()) { value in
+            let result = try await AccountSynchronizer.download(collectiveID: collectiveID, snapshot: snapshot, api: client(), progress: { progress in
+                await self.reportSyncProgress(progress, account: target, index: 1, total: 1)
+            }) { value in
                 try await localStore.saveSnapshot(value, accountID: id)
             }
             snapshot = result.snapshot
@@ -372,15 +385,17 @@ final class AppModel {
     func syncAccounts(automatic: Bool = false) async -> Bool {
         guard !busy, !syncing, !showLogin, !settingsLogin else { return false }
         if automatic && Date().timeIntervalSince(lastEdit) < 5 { return false }
-        syncing = true; defer { syncing = false; syncBaselines = [:] }
+        syncing = true; defer { syncing = false; syncActivity = nil; syncBaselines = [:] }
         await pendingPersistence?.value
         guard !persistenceFailed else { return false }
         let targets = automatic ? accounts.filter { $0.id == activeID } : accounts
-        for target in targets {
+        for (index, target) in targets.enumerated() {
             if Task.isCancelled { return false }
             do {
                 let base = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
-                let result = try await AccountSynchronizer.synchronize(snapshot: base, api: client(for: target)) { value in
+                let result = try await AccountSynchronizer.synchronize(snapshot: base, api: client(for: target), progress: { progress in
+                    await self.reportSyncProgress(progress, account: target, index: index + 1, total: targets.count)
+                }) { value in
                     try await self.applySync(value, startedFrom: base, accountID: target.id)
                 }
                 collectiveListingErrors[target.id] = result.failures.first?.message
@@ -395,6 +410,10 @@ final class AppModel {
             }
         }
         return true
+    }
+
+    private func reportSyncProgress(_ progress: AccountSyncProgress, account: Account, index: Int, total: Int) {
+        syncActivity = SyncActivity(account: account, accountIndex: index, accountTotal: total, progress: progress)
     }
 
     private func applySync(_ remote: AccountSnapshot, startedFrom base: AccountSnapshot, accountID: UUID) async throws {
@@ -531,19 +550,27 @@ final class AppModel {
             guard Date().timeIntervalSince(lastEdit) >= 5,
                   snapshot.documents.values.contains(where: { $0.draft != nil && $0.conflict == nil }) else { return }
         }
-        syncing = true; defer { syncing = false; syncBaselines = [:] }
+        syncing = true; defer { syncing = false; syncActivity = nil; syncBaselines = [:] }
         await pendingPersistence?.value
         guard !persistenceFailed else { return }
         let targets = automatic ? accounts.filter { $0.id == activeID } : accounts
-        for target in targets {
+        for (accountIndex, target) in targets.enumerated() {
             do {
                 let base = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
                 var remote = base
                 let api = try client(for: target)
-                for key in base.documents.keys.sorted() {
+                let drafts = base.documents.values.filter { $0.draft != nil && $0.conflict == nil }
+                    .sorted { $0.page.id < $1.page.id }
+                for (pageIndex, doc) in drafts.enumerated() {
                     try Task.checkCancellation()
-                    guard let doc = base.documents[key], doc.draft != nil, doc.conflict == nil else { continue }
+                    let key = String(doc.page.id)
+                    var progress = AccountSyncProgress(phase: .uploading,
+                        collective: base.collectives.first { $0.id == doc.collectiveID }, page: doc.page,
+                        completedPages: pageIndex, totalPages: drafts.count)
+                    reportSyncProgress(progress, account: target, index: accountIndex + 1, total: targets.count)
                     remote.documents[key] = try await DocumentSynchronizer.synchronize(document: doc, api: api)
+                    progress.phase = .saving
+                    reportSyncProgress(progress, account: target, index: accountIndex + 1, total: targets.count)
                     try await applySync(remote, startedFrom: base, accountID: target.id)
                 }
                 // Draft-only sync cannot establish that a previous account refresh error has recovered.
@@ -773,6 +800,15 @@ struct ContentView: View {
                 } detail: {
                     detailContent
                 }
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if let activity = model.syncActivity {
+                SyncProgressView(activity: activity)
+                    .frame(maxWidth: 820)
+                    .padding(.horizontal).padding(.vertical, 10)
+                    .frame(maxWidth: .infinity)
+                    .background(AppSurface.chrome)
             }
         }
         .toolbar {
@@ -1163,13 +1199,13 @@ struct ContentView: View {
     }
     private var sidebarFooter: some View {
         HStack(spacing: 8) {
-            if let id = model.activeID, model.syncIssues[id] != nil {
+            if model.syncActivity != nil || model.activeID.map({ model.syncIssues[$0] != nil }) == true {
                 Button { showSyncIssue.toggle() } label: {
                     Label(model.syncSummary, systemImage: model.syncSymbol)
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Show sync error details")
+                .help("Show sync details")
                 .popover(isPresented: $showSyncIssue, arrowEdge: .bottom) {
                     SyncStatusView(model: model).frame(width: 320)
                 }
