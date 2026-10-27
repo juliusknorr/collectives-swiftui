@@ -14,7 +14,12 @@ python3 scripts/build-embedded-text.py /path/to/nextcloud/text
 This uses a pinned esbuild release through npx. It consumes Text's committed
 production assets, avoiding a full Text dependency installation. The adapter
 and theme live outside vendor. The generated IIFE includes dynamic imports;
-Vite retains CSS preloads only. No Nextcloud Text source changes are required.
+Vite retains CSS preloads only. The build script adds a small `resetMarkdownContent` embedding method to its
+staged copy of Text. It replaces content without emitting an initial update,
+creates fresh ProseMirror plugin state to clear undo/redo and selection, and
+refreshes headings/toolbar state. It does not change the document schema, Markdown
+parser or serializer. The original Text checkout stays unchanged. The patch is
+pinned and fails if its expected entry point changes.
 
 The native app uses a nonpersistent WKWebView and local-file resources, with a
 CSP that disallows network connections, external images, frames, and forms.
@@ -22,8 +27,9 @@ The web runtime receives Markdown and an opaque editor session UUID. It gets no
 server URL, account identifier, credentials, cookies, or native file paths.
 Native code owns drafts, account selection, persistence, and conditional sync.
 
-The app warms a reusable runtime at launch. Each page session destroys the prior
-document and undo history while retaining loaded modules and styles. Inline
+The app warms one mounted editor at launch. Page changes use silent document
+replacement and fresh plugin state rather than recreating Vue/Tiptap. Closing a
+session clears its document and history while retaining the editor and assets. Inline
 View/Edit/Rich Text transitions flush updates before changing pages or accounts.
 
 The first session preserves the exact source in an optional per-account snapshot

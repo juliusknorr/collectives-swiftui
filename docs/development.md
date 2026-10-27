@@ -121,11 +121,13 @@ updates before navigating. The original-source recovery action remains in the
 **Aa** menu.
 
 The app prewarms one local WebKit runtime at launch and reuses its parsed modules
-and styles across pages. Each page gets a fresh editor with its own undo history;
-closing a session destroys its document state. A native loading indicator covers
-cold startup, while View and Edit stay available. In a local offline WebKit smoke,
-prewarming took about one second and opening a second page took 26 ms; actual
-startup time depends on the device and document. Settings let you choose the
+and styles across pages. A small pinned Text embedding extension replaces the
+document in the mounted editor and resets its plugin state, selection and undo
+history. Closing a session clears its document. This avoids rebuilding Vue/Tiptap
+on every page switch. The web view stays mounted and visible; a loading indicator
+appears only after 180 ms to avoid flashing during fast transitions. View and Edit
+stay available during cold startup. Local offline WebKit checks measured about
+13–18 ms for a subsequent page; actual time depends on the device and document. Settings let you choose the
 default mode or remember your most recently selected mode.
 
 Rich edits can normalize Markdown and discard unsupported syntax. Before the
