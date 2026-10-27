@@ -173,3 +173,19 @@ private final class StartupFixture {
     #expect(await fixture.transport.requests.allSatisfy { $0.httpMethod != "PUT" })
     #expect(await fixture.transport.requests.allSatisfy { $0.url?.lastPathComponent != "90.md" })
 }
+
+@MainActor
+@Test func clientsAreCreatedOncePerAccount() async throws {
+    let fixture = try await StartupFixture(accountCount: 2)
+    defer { fixture.cleanup() }
+    var created: [UUID] = []
+    let model = AppModel(store: fixture.store, preferences: LibraryPreferences(defaults: fixture.defaults)) { account in
+        created.append(account.id)
+        return CollectivesClient(account: account, credential: Credential(loginName: account.userID, appPassword: "test"),
+            transport: fixture.transport)
+    }
+    await model.start()
+    #expect(await model.syncAccounts())
+    _ = try model.client()
+    #expect(created.sorted { $0.uuidString < $1.uuidString } == fixture.accounts.map(\.id).sorted { $0.uuidString < $1.uuidString })
+}

@@ -87,6 +87,7 @@ final class AppModel {
     private let store: LocalStore
     private let credentials = KeychainCredentialStore()
     private let makeClient: @MainActor (Account) throws -> CollectivesClient
+    private var clients: [UUID: CollectivesClient] = [:]
     private var pushConnected = false
     private var remoteSyncRequested = false
     private var automaticSyncGeneration: UUID?
@@ -132,7 +133,14 @@ final class AppModel {
     }
     func client() throws -> CollectivesClient {
         guard let account else { throw CollectivesError.invalidResponse }
-        return try makeClient(account)
+        return try client(for: account)
+    }
+    /// One client per account keeps Keychain reads and URL sessions out of the render and sync loops.
+    private func client(for account: Account) throws -> CollectivesClient {
+        if let cached = clients[account.id] { return cached }
+        let created = try makeClient(account)
+        clients[account.id] = created
+        return created
     }
     func selectAccount(_ id: UUID) async {
         guard !busy, accounts.contains(where: { $0.id == id }) else { return }
@@ -179,7 +187,7 @@ final class AppModel {
         for target in targets {
             do {
                 var local = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
-                let remote = try await makeClient(target).collectives()
+                let remote = try await client(for: target).collectives()
                 local.replaceCollectives(remote)
                 accountCollectives[target.id] = local.collectives
                 if target.id == activeID { snapshot = local }
@@ -335,7 +343,7 @@ final class AppModel {
             do {
                 let local = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
                 let localStore = store
-                let result = try await AccountSynchronizer.synchronize(snapshot: local, api: makeClient(target)) { value in
+                let result = try await AccountSynchronizer.synchronize(snapshot: local, api: client(for: target)) { value in
                     try await localStore.saveSnapshot(value, accountID: target.id)
                 }
                 accountCollectives[target.id] = result.snapshot.collectives
@@ -407,7 +415,7 @@ final class AppModel {
     private func listenForChanges(account target: Account, generation: UUID) async {
         while !Task.isCancelled && automaticSyncGeneration == generation {
             do {
-                let api = try makeClient(target)
+                let api = try client(for: target)
                 guard let endpoint = try await api.notifyPushEndpoint(),
                       let credential = try credentials.credential(accountID: target.id) else { return }
                 let sessions = NotifyPushSessions(client: api)
@@ -476,7 +484,7 @@ final class AppModel {
                 var local = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
                 let pending = local.documents.keys.sorted().filter { local.documents[$0]?.draft != nil }
                 guard !pending.isEmpty else { continue }
-                let api = try makeClient(target)
+                let api = try client(for: target)
                 for key in pending {
                     try Task.checkCancellation()
                     guard let doc = local.documents[key] else { continue }
@@ -533,6 +541,7 @@ final class AppModel {
         accounts.removeAll { $0.id == id }
         accountCollectives[id] = nil
         collectiveListingErrors[id] = nil
+        clients[id] = nil
         preferences.remove(accountID: id)
         if activeID == id {
             activeID = nil; snapshot = AccountSnapshot()
@@ -658,6 +667,7 @@ final class AppModel {
         let existing = accounts.first { $0.serverURL == server && $0.userID == userID }
         let new = Account(id: existing?.id ?? UUID(), serverURL: server, userID: userID)
         try credentials.save(credential, accountID: new.id)
+        clients[new.id] = nil
         if existing == nil { accounts.append(new) }
         try await store.saveAccounts(accounts)
         busy = false
