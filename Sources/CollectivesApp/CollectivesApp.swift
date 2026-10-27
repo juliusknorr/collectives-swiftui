@@ -62,6 +62,8 @@ struct CollectivesApp: App {
 @MainActor @Observable
 final class AppModel {
     var accounts: [Account] = []
+    var accountCollectives: [UUID: [Collective]] = [:]
+    var collectiveListingErrors: [UUID: String] = [:]
     var activeID: UUID?
     var snapshot = AccountSnapshot()
     var selectedCollective: Int?
@@ -74,16 +76,17 @@ final class AppModel {
     var loginServer = "https://"
     var started = false
     var library = PageLibraryState()
-    private let preferences = LibraryPreferences()
+    private let preferences: LibraryPreferences
     private let store: LocalStore
     private let credentials = KeychainCredentialStore()
     private var pendingPersistence: Task<Void, Never>?
     private var persistenceFailed = false
     private var lastEdit = Date.distantPast
 
-    init() {
+    init(store: LocalStore? = nil, preferences: LibraryPreferences = LibraryPreferences()) {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        store = LocalStore(root: base.appendingPathComponent("Collectives", isDirectory: true))
+        self.store = store ?? LocalStore(root: base.appendingPathComponent("Collectives", isDirectory: true))
+        self.preferences = preferences
     }
     var account: Account? { accounts.first { $0.id == activeID } }
     var pages: [Page] { snapshot.pages[String(selectedCollective ?? -1)] ?? [] }
@@ -97,9 +100,14 @@ final class AppModel {
         guard !started else { return }; started = true
         do {
             accounts = try await store.accounts()
+            for account in accounts {
+                do { accountCollectives[account.id] = try await store.snapshot(accountID: account.id).collectives }
+                catch { collectiveListingErrors[account.id] = error.localizedDescription }
+            }
             if let target = accounts.first(where: { $0.id == preferences.lastAccountID }) ?? accounts.first {
                 await selectAccount(target.id)
                 await restoreSelection()
+                await refresh(excludingActive: true)
             }
         } catch { message = error.localizedDescription }
     }
@@ -110,34 +118,63 @@ final class AppModel {
         return CollectivesClient(account: account, credential: credential)
     }
     func selectAccount(_ id: UUID) async {
-        guard !busy else { return }
+        guard !busy, accounts.contains(where: { $0.id == id }) else { return }
         busy = true; defer { busy = false }
         await pendingPersistence?.value
         guard !persistenceFailed else { message = "Save the current draft successfully before switching accounts."; return }
+        _ = await loadAccount(id)
+    }
+    private func loadAccount(_ id: UUID) async -> Bool {
         let loaded: AccountSnapshot
         do { loaded = try await store.snapshot(accountID: id) }
-        catch { message = error.localizedDescription; return }
+        catch { message = error.localizedDescription; return false }
+        if let previousID = activeID { accountCollectives[previousID] = snapshot.collectives }
         activeID = id; selectedCollective = nil; selectedPage = nil; text = ""
         snapshot = loaded
+        accountCollectives[id] = loaded.collectives
         library = preferences.load(accountID: id)
         preferences.lastAccountID = id
         do {
             snapshot.collectives = try await client().collectives()
+            accountCollectives[id] = snapshot.collectives
             try await persist(); message = "Collectives refreshed."
-        } catch { message = "Using cached content. \(error.localizedDescription)" }
+            collectiveListingErrors[id] = nil
+        } catch {
+            collectiveListingErrors[id] = error.localizedDescription
+            message = "Using cached content. \(error.localizedDescription)"
+        }
+        return true
     }
     func persist() async throws {
         guard let id = activeID else { return }
         try await store.saveSnapshot(snapshot, accountID: id)
     }
-    func refresh() async {
-        guard !busy, account != nil else { return }
+    func collectives(for accountID: UUID) -> [Collective] {
+        accountID == activeID ? snapshot.collectives : accountCollectives[accountID] ?? []
+    }
+    func refresh(excludingActive: Bool = false) async {
+        let targets = accounts.filter { !excludingActive || $0.id != activeID }
+        guard !busy, !targets.isEmpty else { return }
         busy = true; defer { busy = false }
         await pendingPersistence?.value
-        do {
-            snapshot.collectives = try await client().collectives()
-            try await persist(); message = "Collectives refreshed. Download pages to edit offline."
-        } catch { message = "Using cached content. \(error.localizedDescription)" }
+        guard !persistenceFailed else { message = "Save the current draft before refreshing collectives."; return }
+        for target in targets {
+            do {
+                var local = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
+                guard let credential = try credentials.credential(accountID: target.id) else {
+                    throw CollectivesError.invalidResponse
+                }
+                local.collectives = try await CollectivesClient(account: target, credential: credential).collectives()
+                accountCollectives[target.id] = local.collectives
+                if target.id == activeID { snapshot = local }
+                try await store.saveSnapshot(local, accountID: target.id)
+                collectiveListingErrors[target.id] = nil
+            } catch { collectiveListingErrors[target.id] = error.localizedDescription }
+        }
+        if !excludingActive {
+            message = collectiveListingErrors.isEmpty ? "Collectives refreshed for all accounts." :
+                "Some accounts could not be refreshed. Their cached collectives are shown."
+        }
     }
     @discardableResult
     func openCollective(_ id: Int) async -> Bool {
@@ -145,6 +182,26 @@ final class AppModel {
         busy = true; defer { busy = false }
         await pendingPersistence?.value
         guard !persistenceFailed else { message = "Save the current draft before switching collectives."; return false }
+        await loadCollective(id)
+        return true
+    }
+    func openSidebar(accountID: UUID, collectiveID: Int?) async -> Bool {
+        guard !busy, accounts.contains(where: { $0.id == accountID }) else { return false }
+        busy = true; defer { busy = false }
+        await pendingPersistence?.value
+        guard !persistenceFailed else { message = "Save the current draft before switching pages."; return false }
+        if activeID != accountID {
+            guard await loadAccount(accountID) else { return false }
+        }
+        if let collectiveID {
+            guard snapshot.collectives.contains(where: { $0.id == collectiveID }) else { return false }
+            await loadCollective(collectiveID)
+        } else {
+            showHome()
+        }
+        return true
+    }
+    private func loadCollective(_ id: Int) async {
         selectedCollective = id; selectedPage = nil; text = ""
         library.collectiveID = id; library.pageID = nil; saveLibrary()
         do {
@@ -158,7 +215,6 @@ final class AppModel {
             }
             try await persist(); message = "Select a page."
         } catch { message = "Using cached pages. \(error.localizedDescription)" }
-        return true
     }
     func openPage(_ page: Page) async {
         guard !busy else { return }
@@ -326,6 +382,8 @@ final class AppModel {
         let credentialStore = credentials
         try await store.removeAccount(accountID: id) { try credentialStore.remove(accountID: $0) }
         accounts.removeAll { $0.id == id }
+        accountCollectives[id] = nil
+        collectiveListingErrors[id] = nil
         preferences.remove(accountID: id)
         if activeID == id {
             activeID = nil; snapshot = AccountSnapshot()
@@ -347,10 +405,7 @@ final class AppModel {
             else if snapshot.documents[String(pageID)]?.draft != nil { await openDraft(pageID) }
         }
     }
-    func openHome() async {
-        guard !busy else { return }
-        await pendingPersistence?.value
-        guard !persistenceFailed else { return }
+    private func showHome() {
         selectedCollective = nil; selectedPage = nil; text = ""
         library.collectiveID = nil; library.pageID = nil; saveLibrary()
     }
@@ -461,6 +516,11 @@ final class AppModel {
     }
 }
 
+private struct SidebarDestination: Hashable {
+    let accountID: UUID
+    let collectiveID: Int?
+}
+
 struct ContentView: View {
     @Bindable var model: AppModel
     @AppStorage("automaticSync") private var automaticSync = true
@@ -472,215 +532,27 @@ struct ContentView: View {
     @State private var newPageRequest: NewPageRequest?
     @State private var renamePageRequest: RenamePageRequest?
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var homeColumnVisibility: NavigationSplitViewVisibility = .all
     @State private var editing = false
     @State private var showingOutline = false
     @State private var showingFind = false
     @State private var compactColumn: NavigationSplitViewColumn = .sidebar
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $compactColumn) {
-            VStack(spacing: 0) {
-                accountSwitcher
-                    .padding(.horizontal, 16).padding(.vertical, 14)
-                List(selection: collectiveSelection) {
-                    NavigationLink(value: 0) { Label("Home", systemImage: "house") }
-                        .disabled(model.busy)
-                    Section("Collectives") {
-                        ForEach(model.snapshot.collectives) { collective in
-                            NavigationLink(value: collective.id) {
-                                HStack(spacing: 9) {
-                                    if let emoji = collective.emoji, !emoji.isEmpty {
-                                        Text(emoji).frame(width: 20)
-                                    } else {
-                                        Image(systemName: "books.vertical").foregroundStyle(.secondary).frame(width: 20)
-                                    }
-                                    Text(collective.name).lineLimit(1)
-                                }
-                            }.disabled(model.busy)
-                        }
-                    }
-                    if !drafts.isEmpty {
-                        Section("Drafts") {
-                            ForEach(drafts, id: \.page.id) { doc in
-                                Button {
-                                    Task { await model.openDraft(doc.page.id); compactColumn = .detail }
-                                } label: {
-                                    HStack(spacing: 9) {
-                                        pageIcon(doc.page, hasChildren: false)
-                                        Text(doc.page.title).lineLimit(1)
-                                        Spacer(minLength: 0)
-                                        draftIndicator(doc)
-                                    }.contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain).disabled(model.busy)
-                            }
-                        }
-                    }
+        Group {
+            if model.selectedCollective == nil {
+                NavigationSplitView(columnVisibility: $homeColumnVisibility, preferredCompactColumn: $compactColumn) {
+                    accountSidebar
+                } detail: {
+                    detailContent
+                        .navigationTitle("Home")
                 }
-                .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
-                sidebarFooter
-            }
-            .background(AppSurface.chrome)
-            .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 320)
-            .navigationTitle("Collectives")
-        } content: {
-            VStack(spacing: 0) {
-                PageSearchField(text: $search)
-                    .padding(.horizontal, 12).padding(.vertical, 10)
-                if model.selectedCollective == nil {
-                    ContentUnavailableView("Choose a Collective", systemImage: "books.vertical")
-                } else if !search.isEmpty && searchResults.isEmpty {
-                    ContentUnavailableView.search(text: search)
-                } else {
-                    List(selection: pageSelection) {
-                        if search.isEmpty {
-                            if let accountID = model.activeID, let collectiveID = model.selectedCollective {
-                                RememberedPageOutline(nodes: visibleTree, accountID: accountID,
-                                    collectiveID: collectiveID, selectedPageID: model.selectedPage?.id) { node in
-                                    pageRow(node.page, hasChildren: node.children != nil)
-                                }.disabled(model.busy)
-                            }
-                        } else {
-                            ForEach(searchResults) { page in
-                                NavigationLink(value: page.id) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        pageRow(page, hasChildren: false)
-                                        Text(pagePath(page).map { $0.title }.joined(separator: " › "))
-                                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                    }
-                                }.disabled(model.busy)
-                            }
-                        }
-                    }
-                    .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
-                }
-                if model.selectedCollective != nil {
-                    HStack {
-                        Label("\(model.pages.count) pages", systemImage: "doc.text")
-                        Spacer()
-                        Text("\(model.downloadedCount) offline")
-                    }
-                    .font(.caption).foregroundStyle(.secondary)
-                    .padding(.horizontal, 14).padding(.vertical, 10)
-                }
-            }
-            .background(AppSurface.chrome)
-            .navigationSplitViewColumnWidth(min: 240, ideal: 290, max: 440)
-            .navigationTitle(collectiveTitle)
-            .toolbar {
-                Button("New Page", systemImage: "square.and.pencil") { beginNewPage() }
-                    .keyboardShortcut("n", modifiers: [.command, .shift])
-                    .disabled(model.busy || !model.canEdit || model.pages.isEmpty)
-                Menu {
-                    Button("New Page…", systemImage: "doc.badge.plus") { beginNewPage() }
-                        .disabled(!model.canEdit || model.pages.isEmpty)
-                    Button("Rename Page…", systemImage: "pencil") {
-                        if let page = model.selectedPage { beginRename(page) }
-                    }.disabled(!model.canEdit || model.selectedPage == nil || model.selectedPage?.parentId == 0)
-                    Button("Download for Offline Editing", systemImage: "arrow.down.circle") { Task { await model.downloadCollective() } }
-                    Button("Refresh Pages", systemImage: "arrow.clockwise") {
-                        if let id = model.selectedCollective { Task { await model.openCollective(id) } }
-                    }
-                } label: { Label("Collective Actions", systemImage: "ellipsis.circle") }
-                    .disabled(model.busy || model.selectedCollective == nil)
-            }
-        } detail: {
-            VStack(alignment: .leading, spacing: 12) {
-                if let page = model.selectedPage, model.document != nil {
-                    HStack(spacing: 5) {
-                        Text(collectiveTitle)
-                        ForEach(pagePath(page)) { ancestor in
-                            Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
-                            Button(ancestor.title) { Task { await model.openPage(ancestor) } }
-                                .buttonStyle(.plain)
-                        }
-                        Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
-                        Text(page.title).fontWeight(.medium).foregroundStyle(.primary)
-                            .layoutPriority(1)
-                    }.font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    if editing && model.canEdit {
-                        DocumentHeader(model: model, page: page)
-                            .frame(maxWidth: 740).frame(maxWidth: .infinity)
-                            .padding(.horizontal, 28)
-                        MarkdownSourceEditor(text: Binding(get: { model.text }, set: { model.edited($0) }), disabled: model.busy)
-                            .id(pageIdentity)
-                    } else {
-                        MarkdownReader(showingOutline: $showingOutline, showingFind: $showingFind, model: model, source: model.text, page: page, account: model.account,
-                            pages: model.pages, client: try? model.client()) { destination in
-                                Task { await model.openPage(destination) }
-                            }
-                            .id("\(model.activeID?.uuidString ?? "")/\(page.id)")
-                    }
-                    if let remote = model.document?.conflict {
-                        DisclosureGroup("Compare server version") {
-                            ScrollView { Text(remote.markdown).font(.system(.body, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 180)
-                        }
-                        HStack {
-                            Button("Queue Local Version") { Task { await model.resolveConflict(useServer: false) } }
-                            Button("Use Server Version", role: .destructive) { Task { await model.resolveConflict(useServer: true) } }
-                        }.disabled(model.busy)
-                    }
-                } else if let page = model.selectedPage, !model.busy {
-                    ContentUnavailableView {
-                        Label("Page Not Downloaded", systemImage: "arrow.down.doc")
-                    } description: {
-                        Text("Connect to download this page before reading or editing it.")
-                    } actions: {
-                        Button("Download Page") { Task { await model.openPage(page) } }
-                    }
-                } else if model.busy && model.selectedPage != nil {
-                    ProgressView("Loading page…").frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if model.selectedCollective == nil {
-                    LibraryHomeView(model: model)
-                } else {
-                    ContentUnavailableView("Select a Page", systemImage: "doc.text", description: Text("Choose a page to read, or download this collective for offline editing."))
-                }
-                if model.busy { ProgressView() }
-                Text(model.message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }.padding()
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(AppSurface.document)
-            .toolbar {
-                if model.selectedPage != nil, model.document != nil {
-                    ToolbarItemGroup(placement: .primaryAction) {
-                        Picker("Page Mode", selection: $editing) {
-                            Text("Preview").tag(false)
-                            Text("Edit").tag(true)
-                        }
-                        .pickerStyle(.segmented).labelsHidden().frame(width: 180)
-                        .disabled(model.busy || !model.canEdit)
-                        ShareLink("Share Markdown", item: model.text)
-                            .labelStyle(.iconOnly).help("Share Markdown source")
-                        Button(model.document?.draft == nil ? "Reload Page" : "Sync Page",
-                               systemImage: model.document?.draft == nil ? "arrow.clockwise" : "arrow.triangle.2.circlepath") {
-                            Task { await model.sync() }
-                        }
-                        .labelStyle(.iconOnly)
-                        .help(model.document?.draft == nil ? "Reload page from server" : "Sync page, preserving conflicting edits")
-                        .disabled(model.busy)
-                    }
-                    #if os(macOS)
-                    ToolbarItem(placement: .primaryAction) { Spacer() }
-                    #endif
-                    ToolbarItemGroup(placement: .primaryAction) {
-                        Button {
-                            if showingOutline && !editing { showingOutline = false }
-                            else { editing = false; showingOutline = true }
-                        } label: {
-                            Label("Table of Contents", systemImage: "sidebar.right")
-                        }
-                        .labelStyle(.iconOnly)
-                        .help(showingOutline && !editing ? "Hide table of contents" : "Show table of contents")
-                        .accessibilityValue(showingOutline && !editing ? "Shown" : "Hidden")
-                        Button {
-                            editing = false; showingFind = true
-                        } label: { Label("Find in Page", systemImage: "magnifyingglass") }
-                        .labelStyle(.iconOnly)
-                        .keyboardShortcut("f", modifiers: .command)
-                        .help("Find in page (⌘F)")
-                    }
+            } else {
+                NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $compactColumn) {
+                    accountSidebar
+                } content: {
+                    pageList
+                } detail: {
+                    detailContent
                 }
             }
         }
@@ -719,6 +591,177 @@ struct ContentView: View {
         .onChange(of: pageIdentity, initial: true) { _, _ in editing = defaultPageMode == "edit" }
 
     }
+    private var accountSidebar: some View {
+        VStack(spacing: 0) {
+            sidebarList
+            sidebarFooter
+        }
+        .background(AppSurface.chrome)
+        .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 320)
+        .navigationTitle("Collectives")
+    }
+    private var pageList: some View {
+        VStack(spacing: 0) {
+            PageSearchField(text: $search)
+                .padding(.horizontal, 12).padding(.vertical, 10)
+            if model.selectedCollective == nil {
+                ContentUnavailableView("Choose a Collective", systemImage: "books.vertical")
+            } else if !search.isEmpty && searchResults.isEmpty {
+                ContentUnavailableView.search(text: search)
+            } else {
+                List(selection: pageSelection) {
+                    if search.isEmpty {
+                        if let accountID = model.activeID, let collectiveID = model.selectedCollective {
+                            RememberedPageOutline(nodes: visibleTree, accountID: accountID,
+                                collectiveID: collectiveID, selectedPageID: model.selectedPage?.id) { node in
+                                pageRow(node.page, hasChildren: node.children != nil)
+                            }.disabled(model.busy)
+                        }
+                    } else {
+                        ForEach(searchResults) { page in
+                            NavigationLink(value: page.id) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    pageRow(page, hasChildren: false)
+                                    Text(pagePath(page).map { $0.title }.joined(separator: " › "))
+                                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                            }.disabled(model.busy)
+                        }
+                    }
+                }
+                .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            }
+            if model.selectedCollective != nil {
+                HStack {
+                    Label("\(model.pages.count) pages", systemImage: "doc.text")
+                    Spacer()
+                    Text("\(model.downloadedCount) offline")
+                }
+                .font(.caption).foregroundStyle(.secondary)
+                .padding(.horizontal, 14).padding(.vertical, 10)
+            }
+        }
+        .background(AppSurface.chrome)
+        .navigationSplitViewColumnWidth(min: 240, ideal: 290, max: 440)
+        .navigationTitle(collectiveTitle)
+        .toolbar {
+            Button("New Page", systemImage: "square.and.pencil") { beginNewPage() }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(model.busy || !model.canEdit || model.pages.isEmpty)
+            Menu {
+                Button("New Page…", systemImage: "doc.badge.plus") { beginNewPage() }
+                    .disabled(!model.canEdit || model.pages.isEmpty)
+                Button("Rename Page…", systemImage: "pencil") {
+                    if let page = model.selectedPage { beginRename(page) }
+                }.disabled(!model.canEdit || model.selectedPage == nil || model.selectedPage?.parentId == 0)
+                Button("Download for Offline Editing", systemImage: "arrow.down.circle") { Task { await model.downloadCollective() } }
+                Button("Refresh Pages", systemImage: "arrow.clockwise") {
+                    if let id = model.selectedCollective { Task { await model.openCollective(id) } }
+                }
+            } label: { Label("Collective Actions", systemImage: "ellipsis.circle") }
+                .disabled(model.busy || model.selectedCollective == nil)
+        }
+    }
+    private var detailContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let page = model.selectedPage, model.document != nil {
+                HStack(spacing: 5) {
+                    Text(collectiveTitle)
+                    ForEach(pagePath(page)) { ancestor in
+                        Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
+                        Button(ancestor.title) { Task { await model.openPage(ancestor) } }
+                            .buttonStyle(.plain)
+                    }
+                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
+                    Text(page.title).fontWeight(.medium).foregroundStyle(.primary)
+                        .layoutPriority(1)
+                }.font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                if editing && model.canEdit {
+                    DocumentHeader(model: model, page: page)
+                        .frame(maxWidth: 740).frame(maxWidth: .infinity)
+                        .padding(.horizontal, 28)
+                    MarkdownSourceEditor(text: Binding(get: { model.text }, set: { model.edited($0) }), disabled: model.busy)
+                        .id(pageIdentity)
+                } else {
+                    MarkdownReader(showingOutline: $showingOutline, showingFind: $showingFind, model: model, source: model.text, page: page, account: model.account,
+                        pages: model.pages, client: try? model.client()) { destination in
+                            Task { await model.openPage(destination) }
+                        }
+                        .id("\(model.activeID?.uuidString ?? "")/\(page.id)")
+                }
+                if let remote = model.document?.conflict {
+                    DisclosureGroup("Compare server version") {
+                        ScrollView { Text(remote.markdown).font(.system(.body, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 180)
+                    }
+                    HStack {
+                        Button("Queue Local Version") { Task { await model.resolveConflict(useServer: false) } }
+                        Button("Use Server Version", role: .destructive) { Task { await model.resolveConflict(useServer: true) } }
+                    }.disabled(model.busy)
+                }
+            } else if let page = model.selectedPage, !model.busy {
+                ContentUnavailableView {
+                    Label("Page Not Downloaded", systemImage: "arrow.down.doc")
+                } description: {
+                    Text("Connect to download this page before reading or editing it.")
+                } actions: {
+                    Button("Download Page") { Task { await model.openPage(page) } }
+                }
+            } else if model.busy && model.selectedPage != nil {
+                ProgressView("Loading page…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.selectedCollective == nil {
+                LibraryHomeView(model: model)
+            } else {
+                ContentUnavailableView("Select a Page", systemImage: "doc.text", description: Text("Choose a page to read, or download this collective for offline editing."))
+            }
+            if model.busy { ProgressView() }
+            Text(model.message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }.padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(AppSurface.document)
+        .toolbar {
+            if model.selectedPage != nil, model.document != nil {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Picker("Page Mode", selection: $editing) {
+                        Text("Preview").tag(false)
+                        Text("Edit").tag(true)
+                    }
+                    .pickerStyle(.segmented).labelsHidden().frame(width: 180)
+                    .disabled(model.busy || !model.canEdit)
+                    ShareLink("Share Markdown", item: model.text)
+                        .labelStyle(.iconOnly).help("Share Markdown source")
+                    Button(model.document?.draft == nil ? "Reload Page" : "Sync Page",
+                           systemImage: model.document?.draft == nil ? "arrow.clockwise" : "arrow.triangle.2.circlepath") {
+                        Task { await model.sync() }
+                    }
+                    .labelStyle(.iconOnly)
+                    .help(model.document?.draft == nil ? "Reload page from server" : "Sync page, preserving conflicting edits")
+                    .disabled(model.busy)
+                }
+                #if os(macOS)
+                ToolbarItem(placement: .primaryAction) { Spacer() }
+                #endif
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button {
+                        if showingOutline && !editing { showingOutline = false }
+                        else { editing = false; showingOutline = true }
+                    } label: {
+                        Label("Table of Contents", systemImage: "sidebar.right")
+                    }
+                    .labelStyle(.iconOnly)
+                    .help(showingOutline && !editing ? "Hide table of contents" : "Show table of contents")
+                    .accessibilityValue(showingOutline && !editing ? "Shown" : "Hidden")
+                    Button {
+                        editing = false; showingFind = true
+                    } label: { Label("Find in Page", systemImage: "magnifyingglass") }
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut("f", modifiers: .command)
+                    .help("Find in page (⌘F)")
+                }
+            }
+        }
+    }
     private func beginNewPage(parent: Page? = nil) {
         guard !model.busy, model.canEdit, let accountID = model.activeID,
               let collectiveID = model.selectedCollective,
@@ -739,19 +782,24 @@ struct ContentView: View {
     private var drafts: [CachedDocument] {
         model.snapshot.documents.values.filter { $0.draft != nil }.sorted { $0.page.title.localizedStandardCompare($1.page.title) == .orderedAscending }
     }
-    private var collectiveSelection: Binding<Int?> {
-        Binding(get: { model.selectedCollective ?? 0 }, set: { id in
-            if id == 0 {
-                Task { await model.openHome(); compactColumn = .detail }
-            } else if let id {
-                Task {
-                    let previous = model.selectedCollective
-                    if await model.openCollective(id) {
-                        search = ""
-                        if previous != id && closeSidebarAfterCollectiveSwitch {
-                            columnVisibility = .doubleColumn
-                            compactColumn = .content
-                        }
+    private var collectiveSelection: Binding<SidebarDestination?> {
+        Binding(get: {
+            model.activeID.map { SidebarDestination(accountID: $0, collectiveID: model.selectedCollective) }
+        }, set: { destination in
+            guard let destination else { return }
+            Task {
+                let previous = model.activeID.map {
+                    SidebarDestination(accountID: $0, collectiveID: model.selectedCollective)
+                }
+                if await model.openSidebar(accountID: destination.accountID, collectiveID: destination.collectiveID) {
+                    search = ""
+                    if destination.collectiveID == nil { compactColumn = .detail }
+                    else if previous?.collectiveID == nil {
+                        columnVisibility = closeSidebarAfterCollectiveSwitch ? .doubleColumn : .all
+                        compactColumn = .content
+                    } else if previous != destination && closeSidebarAfterCollectiveSwitch {
+                        columnVisibility = .doubleColumn
+                        compactColumn = .content
                     }
                 }
             }
@@ -814,33 +862,68 @@ struct ContentView: View {
         }
         .help(([collectiveTitle] + pagePath(page).map { $0.title } + [page.title]).joined(separator: " › "))
     }
-    private var accountSwitcher: some View {
-        Menu {
+    private var sidebarList: some View {
+        List(selection: collectiveSelection) {
             ForEach(model.accounts) { account in
-                Button {
-                    search = ""; Task { await model.selectAccount(account.id) }
-                } label: {
-                    Label("\(account.userID) · \(account.serverURL.host ?? "")", systemImage: account.id == model.activeID ? "checkmark" : "person")
+                Section {
+                    NavigationLink(value: SidebarDestination(accountID: account.id, collectiveID: nil)) {
+                        Label("Home", systemImage: "house")
+                    }.disabled(model.busy)
+                    ForEach(model.collectives(for: account.id)) { collective in
+                        NavigationLink(value: SidebarDestination(accountID: account.id, collectiveID: collective.id)) {
+                            HStack(spacing: 9) {
+                                if let emoji = collective.emoji, !emoji.isEmpty {
+                                    Text(emoji).frame(width: 20)
+                                } else {
+                                    Image(systemName: "books.vertical").foregroundStyle(.secondary).frame(width: 20)
+                                }
+                                Text(collective.name).lineLimit(1)
+                            }
+                        }.disabled(model.busy)
+                    }
+                    if model.collectives(for: account.id).isEmpty {
+                        Text(model.collectiveListingErrors[account.id] == nil ? "No collectives" : "No cached collectives")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if account.id == model.activeID && !drafts.isEmpty {
+                        Label("Drafts", systemImage: "pencil.circle")
+                            .font(.caption).foregroundStyle(.secondary)
+                        ForEach(drafts, id: \.page.id) { doc in
+                            Button {
+                                Task { await model.openDraft(doc.page.id); compactColumn = .detail }
+                            } label: {
+                                HStack(spacing: 9) {
+                                    pageIcon(doc.page, hasChildren: false)
+                                    Text(doc.page.title).lineLimit(1)
+                                    Spacer(minLength: 0)
+                                    draftIndicator(doc)
+                                }.contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain).disabled(model.busy)
+                        }
+                    }
+                } header: {
+                    HStack(alignment: .top, spacing: 6) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(account.userID).font(.headline)
+                            Text(account.serverURL.absoluteString).font(.caption).lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                        if let error = model.collectiveListingErrors[account.id] {
+                            Image(systemName: "exclamationmark.icloud")
+                                .help("Could not refresh collectives: \(error)")
+                                .accessibilityLabel("Could not refresh collectives: \(error)")
+                        }
+                    }
+                    .textCase(nil)
+                    .accessibilityElement(children: .combine)
                 }
             }
-            if !model.accounts.isEmpty { Divider() }
             Button("Add Account…", systemImage: "person.badge.plus") { model.beginLogin() }
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "person.crop.circle.fill")
-                    .font(.system(size: 30)).foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(model.account?.userID ?? "Add Account").font(.headline).foregroundStyle(.primary)
-                    Text(model.account?.serverURL.host ?? "Connect to Nextcloud")
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.up.chevron.down").font(.caption2).foregroundStyle(.secondary)
-            }.contentShape(Rectangle())
+                .disabled(model.busy)
         }
-        .buttonStyle(.plain).menuIndicator(.hidden)
-        .disabled(model.busy)
-        .accessibilityLabel("Switch Account")
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
     }
     private var sidebarFooter: some View {
         HStack(spacing: 8) {
@@ -851,7 +934,7 @@ struct ContentView: View {
             Spacer(minLength: 0)
             Menu {
                 Button("Sync All Accounts", systemImage: "arrow.triangle.2.circlepath") { Task { await model.syncPending() } }
-                Button("Refresh Collectives", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
+                Button("Refresh All Collectives", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
                 Divider()
                 Toggle("Auto-sync Active Account", isOn: $automaticSync)
             } label: { Image(systemName: "arrow.triangle.2.circlepath") }

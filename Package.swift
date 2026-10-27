@@ -14,6 +14,7 @@ let package = Package(
     targets: [
         .target(name: "CollectivesCore", dependencies: [.product(name: "Markdown", package: "swift-markdown")]),
         .executableTarget(name: "CollectivesApp", dependencies: ["CollectivesCore"]),
-        .testTarget(name: "CollectivesCoreTests", dependencies: ["CollectivesCore"])
+        .testTarget(name: "CollectivesCoreTests", dependencies: ["CollectivesCore"]),
+        .testTarget(name: "CollectivesAppTests", dependencies: ["CollectivesApp"])
     ]
 )
