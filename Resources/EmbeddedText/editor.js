@@ -7,6 +7,8 @@
         if (instance || session) return;
         session = input.session;
         try {
+            let signalLoaded;
+            const loaded = new Promise(resolve => { signalLoaded = resolve });
             instance = await window.OCA.Text.createMarkdownContentEditor({
                 el: document.getElementById('editor'),
                 content: input.markdown,
@@ -15,11 +17,14 @@
                 onLoaded: () => {
                     document.getElementById('status').hidden = true;
                     post({ type: 'loaded', session });
+                    signalLoaded();
                 },
                 onUpdate: ({ markdown }) => {
                     post({ type: 'update', session, revision: ++revision, markdown });
                 },
             });
+            await loaded;
+            return instance;
         } catch (error) {
             console.error(error);
             window.reportTextError();

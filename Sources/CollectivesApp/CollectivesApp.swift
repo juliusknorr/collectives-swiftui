@@ -83,6 +83,7 @@ final class AppModel {
     var canCancelSync: Bool { (syncing || syncActivity != nil) && !isCancellingSync }
     var syncActivity: SyncActivity?
     var syncIssues: [UUID: SyncIssue] = [:]
+    var textSession: EmbeddedTextSession?
     var showLogin = false
     var settingsLogin = false
     var loginServer = "https://"
@@ -316,7 +317,11 @@ final class AppModel {
         message = doc.conflict == nil ? "Local draft waiting to sync." : "Conflict: compare your draft with the server version."
     }
     func edited(_ value: String) {
-        guard let page = selectedPage, var doc = snapshot.documents[String(page.id)], canEdit, !busy else { return }
+        guard let page = selectedPage, let doc = snapshot.documents[String(page.id)], canEdit, !busy else { return }
+        saveEdited(value, page: page, document: doc)
+    }
+    private func saveEdited(_ value: String, page: Page, document: CachedDocument) {
+        var doc = document
         text = value
         lastEdit = Date()
         doc.draft = value == doc.markdown ? nil : value
@@ -336,6 +341,39 @@ final class AppModel {
                 if activeID == id && editGeneration == generation { message = "Draft saved locally; waiting to sync." }
             } catch { savingDraft = false; persistenceFailed = true; message = "Draft not saved: \(error.localizedDescription)" }
         }
+    }
+    func beginTextEditing() async {
+        guard !busy, canEdit, let accountID = activeID, let page = selectedPage,
+              let document, document.conflict == nil else { return }
+        busy = true
+        await pendingPersistence?.value
+        guard !persistenceFailed else { busy = false; return }
+        snapshot.rememberTextSource(pageID: page.id, markdown: text)
+        do {
+            try await persist()
+            textSession = EmbeddedTextSession(accountID: accountID, pageID: page.id, markdown: text)
+        } catch {
+            message = "Could not save the original source: \(error.localizedDescription)"
+            busy = false
+        }
+    }
+    func textEdited(sessionID: UUID, revision: Int, markdown: String) {
+        guard var session = textSession, session.accountID == activeID,
+              session.pageID == selectedPage?.id,
+              session.accept(sessionID: sessionID, revision: revision),
+              let page = selectedPage, let document else { return }
+        textSession = session
+        saveEdited(markdown, page: page, document: document)
+    }
+    func finishTextEditing() async {
+        await pendingPersistence?.value
+        textSession = nil
+        busy = false
+    }
+    func restoreTextSource() {
+        guard !busy, let page = selectedPage,
+              let original = snapshot.textSourceBackups?[String(page.id)] else { return }
+        edited(original)
     }
     func sync() async {
         guard !busy, !syncing, let page = selectedPage, let target = account else { return }
@@ -887,6 +925,8 @@ struct ContentView: View {
     @State private var homeColumnVisibility: NavigationSplitViewVisibility = .all
     @State private var editing = false
     @State private var showingOutline = false
+    @State private var confirmTextEditor = false
+    @State private var confirmRestoreText = false
     @State private var showingFind = false
     @State private var conflictReview: ConflictReviewRequest?
     @State private var compactColumn: NavigationSplitViewColumn = .sidebar
@@ -933,6 +973,22 @@ struct ContentView: View {
         .toolbarBackground(AppSurface.chrome, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
         #endif
+        .sheet(item: $model.textSession) { session in
+            OfflineTextSheet(model: model, session: session)
+                .interactiveDismissDisabled()
+        }
+        .alert("Try Offline Nextcloud Text?", isPresented: $confirmTextEditor) {
+            Button("Open Text") { Task { await model.beginTextEditing() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Rich-text edits can reformat Markdown or remove unsupported syntax. The app keeps a local copy of your original source. Attachments and live collaboration are unavailable in this experiment. Sync pauses until you close the editor.")
+        }
+        .alert("Restore Original Source?", isPresented: $confirmRestoreText) {
+            Button("Restore Source", role: .destructive) { model.restoreTextSource() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This replaces the current draft with the source saved before the first Text editing session. It will sync like a normal Markdown edit.")
+        }
         .sheet(isPresented: $showCommandPalette) {
             if let accountID = model.activeID {
                 CommandPaletteView(model: model, accountID: accountID) {
@@ -1094,6 +1150,15 @@ struct ContentView: View {
                     }
                     .pickerStyle(.segmented).labelsHidden().frame(width: 180)
                     .disabled(model.busy || !model.canEdit)
+                    Menu {
+                        Button("Open Offline Text (Experimental)…") { confirmTextEditor = true }
+                            .disabled(!model.canEdit || model.document?.conflict != nil)
+                        Button("Restore Source from Before Text Editing…") { confirmRestoreText = true }
+                            .disabled(model.selectedPage.flatMap { model.snapshot.textSourceBackups?[String($0.id)] } == nil)
+                    } label: { Label("Text Editor", systemImage: "textformat") }
+                    .accessibilityLabel("Text Editor")
+                    .help("Open offline Nextcloud Text or restore the original Markdown source")
+                    .disabled(model.busy)
                     ShareLink("Share Markdown", item: model.text)
                         .labelStyle(.iconOnly).help("Share Markdown source")
                     Button(model.document?.draft == nil ? "Reload Page" : "Sync Page",
