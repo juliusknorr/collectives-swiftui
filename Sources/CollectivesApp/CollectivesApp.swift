@@ -289,11 +289,16 @@ final class AppModel {
     }
     func openPage(_ page: Page) async {
         guard !busy else { return }
-        busy = true; defer { busy = false; resumeTextEditing() }
+        if selectedPage?.id == page.id, document != nil, pageMode != .richText || !textRuntime.failed { return }
+        busy = true; defer { busy = false }
         await finishTextEditing(retainingContent: pageMode == .richText)
         await pendingPersistence?.value
-        guard !persistenceFailed else { message = "Save the current draft before switching pages."; return }
-        await loadPage(page)
+        if persistenceFailed {
+            message = "Save the current draft before switching pages."
+        } else {
+            await loadPage(page)
+        }
+        await prepareTextEditing()
     }
     private func loadPage(_ page: Page) async {
         let key = String(page.id)
@@ -320,16 +325,19 @@ final class AppModel {
     }
     func openDraft(_ pageID: Int) async {
         guard !busy else { return }
-        busy = true; defer { busy = false; resumeTextEditing() }
+        if selectedPage?.id == pageID, document != nil, pageMode != .richText || !textRuntime.failed { return }
+        busy = true; defer { busy = false }
         await finishTextEditing(retainingContent: pageMode == .richText)
         await pendingPersistence?.value
-        guard !persistenceFailed, let doc = snapshot.documents[String(pageID)] else { return }
-        selectedCollective = doc.collectiveID
-        selectedPage = doc.page
-        pageMode = modePreferences.modeForPage(canEdit: canEdit, hasConflict: doc.conflict != nil)
-        library.visit(pageID: doc.page.id, collectiveID: doc.collectiveID); saveLibrary()
-        text = doc.draft ?? doc.markdown
-        message = doc.conflict == nil ? "Local draft waiting to sync." : "Conflict: compare your draft with the server version."
+        if !persistenceFailed, let doc = snapshot.documents[String(pageID)] {
+            selectedCollective = doc.collectiveID
+            selectedPage = doc.page
+            pageMode = modePreferences.modeForPage(canEdit: canEdit, hasConflict: doc.conflict != nil)
+            library.visit(pageID: doc.page.id, collectiveID: doc.collectiveID); saveLibrary()
+            text = doc.draft ?? doc.markdown
+            message = doc.conflict == nil ? "Local draft waiting to sync." : "Conflict: compare your draft with the server version."
+        }
+        await prepareTextEditing()
     }
     func edited(_ value: String) {
         guard let page = selectedPage, let doc = snapshot.documents[String(page.id)], canEdit, !busy, textSession == nil else { return }
@@ -367,14 +375,18 @@ final class AppModel {
         await finishTextEditing()
         pageMode = !canEdit ? .view : (mode == .richText && document?.conflict != nil ? .edit : mode)
         modePreferences.remember(mode)
+        await prepareTextEditing()
         busy = false
-        resumeTextEditing()
     }
     func beginTextEditing() async {
-        guard !busy, pageMode == .richText, textSession == nil, canEdit,
+        guard !busy else { return }
+        busy = true; defer { busy = false }
+        await prepareTextEditing()
+    }
+    private func prepareTextEditing() async {
+        guard pageMode == .richText, textSession == nil, canEdit,
               let accountID = activeID, let page = selectedPage,
               let document, document.conflict == nil else { return }
-        busy = true; defer { busy = false }
         await pendingPersistence?.value
         guard !persistenceFailed else { pageMode = .edit; return }
         do {
