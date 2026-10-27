@@ -1,6 +1,6 @@
 # App icon
 
-The editable artwork is `render-icon.swift`. It draws a stack of pages on a blue gradient using Core Graphics, without external assets or fonts. iOS uses an opaque square; Mac uses an inset rounded tile with transparent margins.
+The editable artwork is `render-icon.swift`. It draws a white document stack surrounded by three heads and circular arcs on solid Nextcloud blue (#0082C9). The flat geometry suggests people working together around shared documents, without external assets or fonts. iOS uses an opaque square; Mac uses an inset rounded tile with transparent margins and a tile shadow.
 
 Regenerate from the repository root:
 

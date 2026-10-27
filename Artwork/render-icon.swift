@@ -20,30 +20,55 @@ func render(size: Int, mac: Bool, url: URL) throws {
                          color: CGColor(gray: 0, alpha: 0.22))
     }
     bitmap.addPath(rounded(tile, mac ? 192 : 0))
-    bitmap.setFillColor(CGColor(red: 0, green: 0.48, blue: 0.88, alpha: 1))
+    let blue = CGColor(red: 0, green: 130.0 / 255, blue: 201.0 / 255, alpha: 1)
+    bitmap.setFillColor(blue)
     bitmap.fillPath()
-    bitmap.setShadow(offset: .zero, blur: 0)
-    bitmap.saveGState()
-    bitmap.addPath(rounded(tile, mac ? 192 : 0)); bitmap.clip()
-    let colors = [CGColor(red: 0.06, green: 0.67, blue: 0.98, alpha: 1),
-                  CGColor(red: 0, green: 0.36, blue: 0.79, alpha: 1)] as CFArray
-    let gradient = CGGradient(colorsSpace: colorSpace, colors: colors, locations: [0, 1])!
-    bitmap.drawLinearGradient(gradient, start: CGPoint(x: 160, y: 1000), end: CGPoint(x: 850, y: 80), options: [])
-    bitmap.restoreGState()
+    bitmap.setShadow(offset: .zero, blur: 0, color: nil)
     if mac { bitmap.translateBy(x: 80, y: 80); bitmap.scaleBy(x: 0.84375, y: 0.84375) }
-    func card(_ rect: CGRect, alpha: CGFloat) {
-        bitmap.setShadow(offset: CGSize(width: 0, height: -8), blur: 18,
-                         color: CGColor(red: 0, green: 0.16, blue: 0.4, alpha: 0.18))
-        bitmap.addPath(rounded(rect, 42))
-        bitmap.setFillColor(CGColor(gray: 1, alpha: alpha)); bitmap.fillPath()
-        bitmap.setShadow(offset: .zero, blur: 0)
+    let white = CGColor(gray: 1, alpha: 1)
+    let center = CGPoint(x: 512, y: 512)
+    let radius: CGFloat = 290
+    bitmap.setFillColor(white)
+    bitmap.setStrokeColor(white)
+    bitmap.setLineWidth(44)
+    bitmap.setLineCap(.round)
+    for degrees in [90.0, 210, 330] {
+        let angle = CGFloat(degrees * .pi / 180)
+        let head = CGPoint(x: center.x + radius * cos(angle), y: center.y + radius * sin(angle))
+        bitmap.fillEllipse(in: CGRect(x: head.x - 60, y: head.y - 60, width: 120, height: 120))
+        bitmap.addArc(center: center, radius: radius,
+                      startAngle: angle + 25 * .pi / 180, endAngle: angle + 95 * .pi / 180, clockwise: false)
+        bitmap.strokePath()
     }
-    card(CGRect(x: 388, y: 314, width: 364, height: 466), alpha: 0.45)
-    card(CGRect(x: 304, y: 266, width: 364, height: 466), alpha: 0.7)
-    card(CGRect(x: 220, y: 218, width: 364, height: 466), alpha: 1)
-    bitmap.setFillColor(CGColor(red: 0, green: 0.47, blue: 0.86, alpha: 1))
-    for (y, width) in [(566.0, 196.0), (492, 244), (418, 244), (344, 148)] {
-        bitmap.addPath(rounded(CGRect(x: 280, y: y, width: width, height: 22), 11)); bitmap.fillPath()
+
+    func sheet(_ path: CGPath) {
+        bitmap.addPath(path)
+        bitmap.setStrokeColor(blue)
+        bitmap.setLineWidth(30)
+        bitmap.setLineJoin(.round)
+        bitmap.strokePath()
+        bitmap.addPath(path)
+        bitmap.setFillColor(white)
+        bitmap.fillPath()
+    }
+    sheet(rounded(CGRect(x: 370, y: 392, width: 164, height: 236), 18))
+    sheet(rounded(CGRect(x: 424, y: 370, width: 164, height: 294), 18))
+    let front = CGMutablePath()
+    front.move(to: CGPoint(x: 496, y: 354))
+    front.addLine(to: CGPoint(x: 654, y: 354))
+    front.addQuadCurve(to: CGPoint(x: 672, y: 372), control: CGPoint(x: 672, y: 354))
+    front.addLine(to: CGPoint(x: 672, y: 558))
+    front.addLine(to: CGPoint(x: 614, y: 616))
+    front.addLine(to: CGPoint(x: 496, y: 616))
+    front.addQuadCurve(to: CGPoint(x: 478, y: 598), control: CGPoint(x: 478, y: 616))
+    front.addLine(to: CGPoint(x: 478, y: 372))
+    front.addQuadCurve(to: CGPoint(x: 496, y: 354), control: CGPoint(x: 478, y: 354))
+    front.closeSubpath()
+    sheet(front)
+    bitmap.setFillColor(blue)
+    for (y, width) in [(486.0, 120.0), (436, 104)] {
+        bitmap.addPath(rounded(CGRect(x: 516, y: y, width: width, height: 24), 12))
+        bitmap.fillPath()
     }
     let image = bitmap.makeImage()!
     let rep = NSBitmapImageRep(cgImage: image)
