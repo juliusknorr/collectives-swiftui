@@ -1102,6 +1102,7 @@ struct ContentView: View {
                     .help(account.serverURL.absoluteString)
                     .accessibilityElement(children: .combine)
                     .accessibilityValue(account.serverURL.absoluteString)
+                    .padding(.top, account.id == model.accounts.first?.id ? 0 : 12)
                     NavigationLink(value: SidebarDestination(accountID: account.id, collectiveID: nil)) {
                         HStack(spacing: 9) {
                             Image(systemName: "house").foregroundStyle(.secondary).frame(width: 20)
@@ -1127,6 +1128,7 @@ struct ContentView: View {
                     if account.id == model.activeID && !drafts.isEmpty {
                         Label("Drafts", systemImage: "pencil.circle")
                             .font(.caption).foregroundStyle(.secondary)
+                            .padding(.top, 12)
                         ForEach(drafts, id: \.page.id) { doc in
                             Button {
                                 Task { await model.openDraft(doc.page.id); compactColumn = .detail }
@@ -1153,6 +1155,7 @@ struct ContentView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain).disabled(model.busy)
+            .padding(.top, 12)
         }
         .font(.body)
         .listStyle(.sidebar)
