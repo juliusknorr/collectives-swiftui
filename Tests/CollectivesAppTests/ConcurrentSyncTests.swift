@@ -10,6 +10,7 @@ private actor SuspendedDocumentTransport: HTTPTransport {
     private var suspendNextDocument = true
     private var responseStatus = 200
     private var responseBody = "server changes"
+    private(set) var documentRequestHosts: [String] = []
 
     func waitForDocumentRequest() async {
         if requestStarted { return }
@@ -47,6 +48,7 @@ private actor SuspendedDocumentTransport: HTTPTransport {
             return (Data(body.utf8), HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         }
         guard url.path.contains("/remote.php/dav/files/") else { throw CollectivesError.invalidResponse }
+        documentRequestHosts.append(url.host!)
         if suspendNextDocument {
             suspendNextDocument = false
             await withCheckedContinuation { continuation in
@@ -72,7 +74,7 @@ private final class ConcurrentSyncFixture {
     let pages: [Page]
     let model: AppModel
 
-    init(draft: String? = nil) async throws {
+    init(draft: String? = nil, conflictOnly: Bool = false) async throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         suite = "ConcurrentSyncTests.\(root.lastPathComponent)"
         defaults = UserDefaults(suiteName: suite)!
@@ -98,7 +100,9 @@ private final class ConcurrentSyncFixture {
             for page in pages {
                 snapshot.documents[String(page.id)] = CachedDocument(page: page, collectiveID: 7,
                     markdown: "\(account.userID) page \(page.id)", etag: "\"base\"",
-                    draft: account.id == accounts[0].id && page.id == 70 ? draft : nil)
+                    draft: account.id == accounts[0].id && page.id == 70 ? draft : nil,
+                    conflict: account.id == accounts[0].id && page.id == 71 && conflictOnly
+                        ? RemoteDocument(markdown: "competing server copy", etag: "\"competing\"") : nil)
             }
             try await store.saveSnapshot(snapshot, accountID: account.id)
         }
@@ -335,4 +339,123 @@ func resolvingConflictPersistsChosenVersion(useServer: Bool) async throws {
     await fixture.transport.respond()
     #expect(await sync.value)
     #expect(fixture.model.syncActivity == nil)
+}
+
+
+@MainActor
+@Test(arguments: [200, 401])
+func removingAccountDuringPageSyncIgnoresLateResponses(status: Int) async throws {
+    let fixture = try await ConcurrentSyncFixture()
+    defer { fixture.cleanup() }
+    let removed = fixture.accounts[0]
+    let retained = fixture.accounts[1]
+    let sync = Task { await fixture.model.sync() }
+    await fixture.transport.waitForDocumentRequest()
+
+    try await fixture.model.removeAccount(removed.id)
+
+    #expect(fixture.model.accounts == [retained])
+    #expect(fixture.model.activeID == retained.id)
+    #expect(fixture.model.syncActivity?.account.id != removed.id)
+    fixture.model.selectedCollective = 7
+    await fixture.model.openPage(fixture.pages[0])
+    #expect(fixture.model.text == "second page 70")
+    await fixture.transport.respond(status: status, body: "late removed account response")
+    await sync.value
+
+    #expect(fixture.model.accounts == [retained])
+    #expect(fixture.model.text == "second page 70")
+    #expect(fixture.model.document?.markdown == "second page 70")
+    #expect(fixture.model.syncIssues[removed.id] == nil)
+    #expect(fixture.model.accountCollectives[removed.id] == nil)
+    #expect(fixture.model.collectiveListingErrors[removed.id] == nil)
+    #expect(fixture.model.syncActivity == nil)
+    #expect(!fixture.model.syncing)
+    let disk = LocalStore(root: fixture.root)
+    #expect(try await disk.accounts() == [retained])
+    #expect(try await disk.snapshot(accountID: removed.id).documents.isEmpty)
+    #expect(try await disk.snapshot(accountID: retained.id).documents["70"]?.markdown == "second page 70")
+    #expect(!FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent(removed.id.uuidString).path))
+}
+
+@MainActor
+@Test func removingSyncingAccountContinuesFullSyncForRemainingAccount() async throws {
+    let fixture = try await ConcurrentSyncFixture()
+    defer { fixture.cleanup() }
+    let removed = fixture.accounts[0]
+    let retained = fixture.accounts[1]
+    let sync = Task { await fixture.model.syncAccounts() }
+    await fixture.transport.waitForDocumentRequest()
+
+    try await fixture.model.removeAccount(removed.id)
+    #expect(fixture.model.syncActivity?.account.id != removed.id)
+    await fixture.transport.respond(body: "late first account response", suspendNext: true)
+    await fixture.transport.waitForDocumentRequest()
+    #expect(fixture.model.syncActivity?.account.id == retained.id)
+    await fixture.transport.respond(body: "remaining account server copy")
+    #expect(await sync.value)
+
+    #expect(await fixture.transport.documentRequestHosts == ["first.invalid", "second.invalid", "second.invalid"])
+    #expect(fixture.model.syncIssues[removed.id] == nil)
+    #expect(fixture.model.collectiveListingErrors[removed.id] == nil)
+    #expect(fixture.model.accountCollectives[removed.id] == nil)
+    #expect(fixture.model.syncActivity == nil)
+    let disk = LocalStore(root: fixture.root)
+    #expect(try await disk.accounts() == [retained])
+    #expect(try await disk.snapshot(accountID: removed.id).documents.isEmpty)
+    let saved = try await disk.snapshot(accountID: retained.id)
+    #expect(saved.documents["70"]?.markdown == "remaining account server copy")
+    #expect(saved.documents["71"]?.markdown == "remaining account server copy")
+}
+
+@MainActor
+@Test func removingQueuedAccountSkipsItsFullSync() async throws {
+    let fixture = try await ConcurrentSyncFixture()
+    defer { fixture.cleanup() }
+    let retained = fixture.accounts[0]
+    let removed = fixture.accounts[1]
+    let sync = Task { await fixture.model.syncAccounts() }
+    await fixture.transport.waitForDocumentRequest()
+
+    try await fixture.model.removeAccount(removed.id)
+    #expect(fixture.model.syncing)
+    #expect(fixture.model.syncActivity?.account.id == retained.id)
+    await fixture.transport.respond(body: "retained account updated")
+    #expect(await sync.value)
+
+    #expect(await fixture.transport.documentRequestHosts == ["first.invalid", "first.invalid"])
+    #expect(fixture.model.accounts == [retained])
+    #expect(fixture.model.syncIssues[removed.id] == nil)
+    #expect(fixture.model.syncActivity == nil)
+    let disk = LocalStore(root: fixture.root)
+    #expect(try await disk.accounts() == [retained])
+    #expect(try await disk.snapshot(accountID: removed.id).documents.isEmpty)
+    #expect(try await disk.snapshot(accountID: retained.id).documents["70"]?.markdown == "retained account updated")
+}
+
+@MainActor
+@Test(arguments: [false, true])
+func removingAccountDuringSyncRetainsUnsyncedDraftsAndConflicts(conflictOnly: Bool) async throws {
+    let fixture = try await ConcurrentSyncFixture(draft: conflictOnly ? nil : "precious draft", conflictOnly: conflictOnly)
+    defer { fixture.cleanup() }
+    let account = fixture.accounts[0]
+    let sync = Task { await fixture.model.sync() }
+    await fixture.transport.waitForDocumentRequest()
+
+    await #expect(throws: AccountRemovalError.self) {
+        try await fixture.model.removeAccount(account.id)
+    }
+
+    #expect(fixture.model.accounts == fixture.accounts)
+    #expect(fixture.model.activeID == account.id)
+    #expect(fixture.model.syncing)
+    #expect(fixture.model.syncActivity?.account.id == account.id)
+    let saved = try await LocalStore(root: fixture.root).snapshot(accountID: account.id)
+    #expect(saved.documents["70"]?.draft == (conflictOnly ? nil : "precious draft"))
+    #expect(saved.documents["71"]?.conflict?.markdown == (conflictOnly ? "competing server copy" : nil))
+    await fixture.transport.respond(status: 401, body: "")
+    await sync.value
+    #expect(!fixture.model.syncing)
+    #expect(fixture.model.syncIssues[account.id]?.requiresSignIn == true)
+    #expect(try await fixture.store.accounts() == fixture.accounts)
 }

@@ -63,6 +63,7 @@ struct AppSettingsView: View {
                             .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         HStack {
                             Button("Sign In Again…") { login(server: account.serverURL) }
+                                .disabled(model.syncing)
                             Button("Export Backup…") { export(account) }
                             Spacer()
                             Button("Remove…", role: .destructive) { accountToRemove = account }
@@ -70,12 +71,13 @@ struct AppSettingsView: View {
                     }.padding(.vertical, 5)
                 }
                 Button("Add Account…", systemImage: "person.badge.plus") { login(server: nil) }
+                    .disabled(model.syncing)
             } header: {
                 Text("Accounts")
             } footer: {
                 Text("Each account has its own offline pages and drafts. Removing an account clears its credentials and downloads on this device. Accounts with unsynced drafts or conflicts must be synced or resolved first.")
             }
-            .disabled(model.busy || model.syncing || working)
+            .disabled(model.busy || working)
             if let backup {
                 Section("Source Backup") {
                     ShareLink("Save Account Backup…", item: backup)
@@ -94,7 +96,7 @@ struct AppSettingsView: View {
             Button("Remove Account", role: .destructive) { remove(account) }
             Button("Cancel", role: .cancel) {}
         } message: { account in
-            Text("Remove \(account.userID) at \(account.serverURL.host ?? account.serverURL.absoluteString) from this device? Its downloaded pages and credentials will be deleted. Pages on Nextcloud are kept. Unsynced drafts and conflicts block removal.")
+            Text("Remove \(account.userID) at \(account.serverURL.host ?? account.serverURL.absoluteString) from this device? Its downloaded pages and credentials will be deleted. Pages on Nextcloud are kept. Any sync for this account will stop. Unsynced drafts and conflicts block removal.")
         }
         .alert("Account Action Failed", isPresented: Binding(
             get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }

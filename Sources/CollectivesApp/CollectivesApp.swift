@@ -91,6 +91,8 @@ final class AppModel {
     private let credentials = KeychainCredentialStore()
     private let makeClient: @MainActor (Account) throws -> CollectivesClient
     private var clients: [UUID: CollectivesClient] = [:]
+    private var accountSyncTasks: [UUID: Task<Void, Error>] = [:]
+    private var removingAccountIDs: Set<UUID> = []
     private var pushConnected = false
     private var remoteSyncRequested = false
     private var automaticSyncGeneration: UUID?
@@ -164,6 +166,7 @@ final class AppModel {
     }
     /// One client per account keeps Keychain reads and URL sessions out of the render and sync loops.
     private func client(for account: Account) throws -> CollectivesClient {
+        guard canSyncAccount(account.id) else { throw CancellationError() }
         if let cached = clients[account.id] { return cached }
         let created = try makeClient(account)
         clients[account.id] = created
@@ -176,7 +179,7 @@ final class AppModel {
         guard !persistenceFailed else { message = "Save the current draft successfully before switching accounts."; return }
         _ = await loadAccount(id)
     }
-    private func loadAccount(_ id: UUID) async -> Bool {
+    private func loadAccount(_ id: UUID, refresh: Bool = true) async -> Bool {
         if let previousID = activeID { accountCollectives[previousID] = snapshot.collectives }
         let version = checkpointVersions[id, default: 0]
         let loaded: AccountSnapshot
@@ -190,6 +193,7 @@ final class AppModel {
         accountCollectives[id] = loaded.collectives
         library = preferences.load(accountID: id)
         preferences.lastAccountID = id
+        guard refresh else { return true }
         do {
             let remote = try await client().collectives()
             snapshot.replaceCollectives(remote)
@@ -340,20 +344,26 @@ final class AppModel {
                 collective: snapshot.collectives.first { $0.id == doc.collectiveID }, page: page,
                 totalPages: 1, totalCollectives: 1))
         do {
-            let updated = try await DocumentSynchronizer.synchronize(document: doc, api: client(for: target))
-            var next = base
-            next.documents[String(page.id)] = updated
-            if let activity = syncActivity {
-                var progress = activity.progress
-                progress.phase = .saving
-                syncActivity = SyncActivity(account: target, accountIndex: 1, accountTotal: 1, progress: progress)
+            try await performAccountSync(target.id) { [self] in
+                let updated = try await DocumentSynchronizer.synchronize(document: doc, api: client(for: target))
+                var next = base
+                next.documents[String(page.id)] = updated
+                if let activity = syncActivity {
+                    var progress = activity.progress
+                    progress.phase = .saving
+                    syncActivity = SyncActivity(account: target, accountIndex: 1, accountTotal: 1, progress: progress)
+                }
+                try await applySync(next, startedFrom: base, accountID: target.id)
+                syncIssues[target.id] = nil
+                if activeID == target.id, selectedPage?.id == page.id {
+                    message = document?.conflict == nil ? "Synced with server." : "Server changed. Your changes are saved for review."
+                }
             }
-            try await applySync(next, startedFrom: base, accountID: target.id)
-            syncIssues[target.id] = nil
-            if activeID == target.id, selectedPage?.id == page.id {
-                message = document?.conflict == nil ? "Synced with server." : "Server changed. Your changes are saved for review."
+        } catch {
+            if canSyncAccount(target.id), !(error is CancellationError) {
+                syncIssues[target.id] = SyncIssue(error: error)
             }
-        } catch { syncIssues[target.id] = SyncIssue(error: error) }
+        }
     }
     func downloadCollective() async {
         guard !busy, !syncing, let collectiveID = selectedCollective, let id = activeID else { return }
@@ -389,22 +399,28 @@ final class AppModel {
         await pendingPersistence?.value
         guard !persistenceFailed else { return false }
         let targets = automatic ? accounts.filter { $0.id == activeID } : accounts
-        for (index, target) in targets.enumerated() {
+        for target in targets {
+            guard canSyncAccount(target.id) else { continue }
             if Task.isCancelled { return false }
             do {
-                let base = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
-                let result = try await AccountSynchronizer.synchronize(snapshot: base, api: client(for: target), progress: { progress in
-                    await self.reportSyncProgress(progress, account: target, index: index + 1, total: targets.count)
-                }) { value in
-                    try await self.applySync(value, startedFrom: base, accountID: target.id)
+                try await performAccountSync(target.id) { [self] in
+                    let base = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
+                    let result = try await AccountSynchronizer.synchronize(snapshot: base, api: client(for: target), progress: { progress in
+                        await self.reportSyncProgress(progress, account: target, targets: targets)
+                    }) { value in
+                        try await self.applySync(value, startedFrom: base, accountID: target.id)
+                    }
+                    try Task.checkCancellation()
+                    guard canSyncAccount(target.id) else { throw CancellationError() }
+                    collectiveListingErrors[target.id] = result.failures.first?.message
+                    if let failure = result.failures.first {
+                        syncIssues[target.id] = SyncIssue(message: failure.message,
+                            requiresSignIn: result.failures.contains(where: \.requiresSignIn))
+                    } else { syncIssues[target.id] = nil }
                 }
-                collectiveListingErrors[target.id] = result.failures.first?.message
-                if let failure = result.failures.first {
-                    syncIssues[target.id] = SyncIssue(message: failure.message,
-                        requiresSignIn: result.failures.contains(where: \.requiresSignIn))
-                } else { syncIssues[target.id] = nil }
             } catch {
                 if Task.isCancelled { return false }
+                guard canSyncAccount(target.id), !(error is CancellationError) else { continue }
                 collectiveListingErrors[target.id] = error.localizedDescription
                 syncIssues[target.id] = SyncIssue(error: error)
             }
@@ -412,19 +428,45 @@ final class AppModel {
         return true
     }
 
+    private func canSyncAccount(_ id: UUID) -> Bool {
+        accounts.contains { $0.id == id } && !removingAccountIDs.contains(id)
+    }
+    private func performAccountSync(_ id: UUID, operation: @escaping @MainActor () async throws -> Void) async throws {
+        guard canSyncAccount(id) else { throw CancellationError() }
+        let task = Task { @MainActor in
+            try Task.checkCancellation()
+            guard self.canSyncAccount(id) else { throw CancellationError() }
+            try await operation()
+        }
+        accountSyncTasks[id] = task
+        defer { accountSyncTasks[id] = nil }
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: { task.cancel() }
+    }
+    private func reportSyncProgress(_ progress: AccountSyncProgress, account: Account, targets: [Account]) {
+        let remaining = targets.filter { canSyncAccount($0.id) }
+        guard let index = remaining.firstIndex(where: { $0.id == account.id }) else { return }
+        reportSyncProgress(progress, account: account, index: index + 1, total: remaining.count)
+    }
     private func reportSyncProgress(_ progress: AccountSyncProgress, account: Account, index: Int, total: Int) {
+        guard canSyncAccount(account.id) else { return }
         syncActivity = SyncActivity(account: account, accountIndex: index, accountTotal: total, progress: progress)
     }
 
     private func applySync(_ remote: AccountSnapshot, startedFrom base: AccountSnapshot, accountID: UUID) async throws {
         // Flush local writes before reading an account that may no longer be active.
         await pendingPersistence?.value
+        try Task.checkCancellation()
+        guard canSyncAccount(accountID) else { throw CancellationError() }
         let current: AccountSnapshot
         if accountID == activeID { current = snapshot }
         else {
             let stored = try await store.snapshot(accountID: accountID)
             current = accountID == activeID ? snapshot : stored
         }
+        try Task.checkCancellation()
+        guard canSyncAccount(accountID) else { throw CancellationError() }
         let merged = current.mergingSync(remote, startedFrom: syncBaselines[accountID] ?? base)
         syncBaselines[accountID] = remote
         checkpointVersions[accountID, default: 0] += 1
@@ -437,11 +479,16 @@ final class AppModel {
         let previous = pendingPersistence
         let save = Task { @MainActor in
             await previous?.value
+            guard self.canSyncAccount(accountID) else { throw CancellationError() }
             try await store.saveSnapshot(merged, accountID: accountID)
         }
         pendingPersistence = Task {
             do { try await save.value }
-            catch { persistenceFailed = true; message = "Draft not saved: \(error.localizedDescription)" }
+            catch {
+                if canSyncAccount(accountID), !(error is CancellationError) {
+                    persistenceFailed = true; message = "Draft not saved: \(error.localizedDescription)"
+                }
+            }
         }
         try await save.value
     }
@@ -554,28 +601,32 @@ final class AppModel {
         await pendingPersistence?.value
         guard !persistenceFailed else { return }
         let targets = automatic ? accounts.filter { $0.id == activeID } : accounts
-        for (accountIndex, target) in targets.enumerated() {
+        for target in targets {
+            guard canSyncAccount(target.id) else { continue }
             do {
-                let base = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
-                var remote = base
-                let api = try client(for: target)
-                let drafts = base.documents.values.filter { $0.draft != nil && $0.conflict == nil }
-                    .sorted { $0.page.id < $1.page.id }
-                for (pageIndex, doc) in drafts.enumerated() {
-                    try Task.checkCancellation()
-                    let key = String(doc.page.id)
-                    var progress = AccountSyncProgress(phase: .uploading,
-                        collective: base.collectives.first { $0.id == doc.collectiveID }, page: doc.page,
-                        completedPages: pageIndex, totalPages: drafts.count)
-                    reportSyncProgress(progress, account: target, index: accountIndex + 1, total: targets.count)
-                    remote.documents[key] = try await DocumentSynchronizer.synchronize(document: doc, api: api)
-                    progress.phase = .saving
-                    reportSyncProgress(progress, account: target, index: accountIndex + 1, total: targets.count)
-                    try await applySync(remote, startedFrom: base, accountID: target.id)
+                try await performAccountSync(target.id) { [self] in
+                    let base = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
+                    var remote = base
+                    let api = try client(for: target)
+                    let drafts = base.documents.values.filter { $0.draft != nil && $0.conflict == nil }
+                        .sorted { $0.page.id < $1.page.id }
+                    for (pageIndex, doc) in drafts.enumerated() {
+                        try Task.checkCancellation()
+                        let key = String(doc.page.id)
+                        var progress = AccountSyncProgress(phase: .uploading,
+                            collective: base.collectives.first { $0.id == doc.collectiveID }, page: doc.page,
+                            completedPages: pageIndex, totalPages: drafts.count)
+                        reportSyncProgress(progress, account: target, targets: targets)
+                        remote.documents[key] = try await DocumentSynchronizer.synchronize(document: doc, api: api)
+                        progress.phase = .saving
+                        reportSyncProgress(progress, account: target, targets: targets)
+                        try await applySync(remote, startedFrom: base, accountID: target.id)
+                    }
+                    // Draft-only sync cannot establish that a previous account refresh error has recovered.
                 }
-                // Draft-only sync cannot establish that a previous account refresh error has recovered.
             } catch {
                 if Task.isCancelled { return }
+                guard canSyncAccount(target.id), !(error is CancellationError) else { continue }
                 syncIssues[target.id] = SyncIssue(error: error)
             }
         }
@@ -612,25 +663,35 @@ final class AppModel {
         return String(decoding: try encoder.encode(saved), as: UTF8.self)
     }
     func removeAccount(_ id: UUID) async throws {
-        guard !busy, !syncing else { throw CollectivesError.invalidResponse }
+        guard !busy, accounts.contains(where: { $0.id == id }) else { throw CollectivesError.invalidResponse }
         busy = true
         defer { busy = false }
         await pendingPersistence?.value
         guard !persistenceFailed else { throw CollectivesError.invalidResponse }
+        let saved = id == activeID ? snapshot : try await store.snapshot(accountID: id)
+        guard !saved.documents.values.contains(where: \.hasLocalChanges) else { throw AccountRemovalError.unsyncedChanges }
+        removingAccountIDs.insert(id)
+        defer { removingAccountIDs.remove(id) }
+        accountSyncTasks[id]?.cancel()
+        if syncActivity?.account.id == id { syncActivity = nil }
         let credentialStore = credentials
         try await store.removeAccount(accountID: id) { try credentialStore.remove(accountID: $0) }
         accounts.removeAll { $0.id == id }
+        if let activity = syncActivity, activity.accountTotal > 1 {
+            reportSyncProgress(activity.progress, account: activity.account, targets: accounts)
+        }
         accountCollectives[id] = nil
         collectiveListingErrors[id] = nil
         clients[id] = nil
         checkpointSnapshots[id] = nil; checkpointVersions[id] = nil
+        syncBaselines[id] = nil
         syncIssues[id] = nil
         preferences.remove(accountID: id)
         if activeID == id {
+            automaticSyncGeneration = nil; pushConnected = false; remoteSyncRequested = false
             activeID = nil; snapshot = AccountSnapshot()
             selectedCollective = nil; selectedPage = nil; text = ""
-            busy = false
-            if let first = accounts.first { await selectAccount(first.id) }
+            if let first = accounts.first { _ = await loadAccount(first.id, refresh: false) }
         }
         message = "Account removed from this device."
     }

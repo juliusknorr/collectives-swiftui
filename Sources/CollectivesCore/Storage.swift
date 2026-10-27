@@ -63,6 +63,7 @@ public actor LocalStore {
     }
     // AppModel owns one store for this root; all commits pass through this actor.
     private var loaded: [UUID: StoredAccount] = [:]
+    private var removedAccountIDs: Set<UUID> = []
 
     public init(root: URL) { self.root = root }
     private func read<T: Decodable>(_ type: T.Type, at url: URL) throws -> T {
@@ -108,10 +109,12 @@ public actor LocalStore {
         return legacy
     }
     public func saveSnapshot(_ snapshot: AccountSnapshot, accountID: UUID) throws {
+        guard !removedAccountIDs.contains(accountID) else { throw CancellationError() }
         _ = try self.snapshot(accountID: accountID)
         try commit(snapshot, accountID: accountID, previous: loaded[accountID])
     }
     public func saveDocument(_ document: CachedDocument, accountID: UUID) throws {
+        guard !removedAccountIDs.contains(accountID) else { throw CancellationError() }
         _ = try snapshot(accountID: accountID)
         guard var stored = loaded[accountID] else {
             var snapshot = AccountSnapshot()
@@ -188,6 +191,7 @@ public actor LocalStore {
             if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
         }
         loaded[accountID] = nil
+        removedAccountIDs.insert(accountID)
         try saveAccounts(remaining)
     }
     private func snapshotURL(_ id: UUID) -> URL { root.appendingPathComponent(id.uuidString + ".json") }

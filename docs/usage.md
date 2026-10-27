@@ -15,7 +15,7 @@ The sidebar gear opens **Settings**, also available through **Collectives > Sett
 - Foreground automatic sync for the active account.
 - Add accounts, sign in again through Login Flow v2, export account source backups, and remove accounts from this device.
 
-Removing an account requires confirmation and clears only that account's credentials, downloaded pages, and cached images. Unsynced drafts or conflicts block removal until synced or resolved. Account backups include downloaded Markdown, drafts, and server conflict copies, without credentials; keep exported backups private. Server content is not deleted.
+Removing an account requires confirmation and clears only that account's credentials, downloaded pages, and cached images. You can remove an account while sync is running: its sync is canceled, late responses are ignored, and other accounts continue syncing. Unsynced drafts or conflicts block removal until synced or resolved. Account backups include downloaded Markdown, drafts, and server conflict copies, without credentials; keep exported backups private. Server content is not deleted.
 
 The home view provides recent pages and favorites stored locally per account. The app remembers the last account and page, expanded folders, and reading position on this device. Page headers show their emoji, editing information where available, and sync state. Emoji changes update Collectives on the server. Sync actions remain available separately from Settings; downloads and page refresh are in the collective actions menu.
 

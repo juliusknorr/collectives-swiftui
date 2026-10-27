@@ -63,3 +63,24 @@ private let removalPage = Page(id: 1, title: "Draft", fileName: "Draft.md", file
     #expect(try await store.accounts() == [account])
     #expect(try await store.snapshot(accountID: account.id).documents["1"]?.markdown == "Saved")
 }
+
+@Test func removedAccountRejectsLateDocumentAndSnapshotWrites() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = LocalStore(root: root)
+    let account = Account(serverURL: URL(string: "https://cloud.example.test")!, userID: "alice")
+    try await store.saveAccounts([account])
+    var saved = AccountSnapshot()
+    let document = CachedDocument(page: removalPage, collectiveID: 1, markdown: "Saved", etag: "1")
+    saved.documents["1"] = document
+    try await store.saveSnapshot(saved, accountID: account.id)
+    try await store.removeAccount(accountID: account.id) { _ in }
+    await #expect(throws: CancellationError.self) {
+        try await store.saveSnapshot(saved, accountID: account.id)
+    }
+    await #expect(throws: CancellationError.self) {
+        try await store.saveDocument(document, accountID: account.id)
+    }
+    #expect(try await LocalStore(root: root).snapshot(accountID: account.id).documents.isEmpty)
+    #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(account.id.uuidString).path))
+}
