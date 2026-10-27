@@ -6,7 +6,10 @@ import WebKit
 final class Smoke: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     var view: WKWebView!
     var timeout: Timer?
-    let session = UUID().uuidString
+    var session = UUID().uuidString
+    var stage = 0
+    var openedAt = Date()
+    var coldStart = Date()
     let source = "# Offline 📝\n\nOriginal **bold** text.\n"
     var edits = [String]()
     var loaded = false
@@ -25,6 +28,7 @@ final class Smoke: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
             """, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         view = WKWebView(frame: CGRect(x: 0, y: 0, width: 900, height: 700), configuration: configuration)
         view.navigationDelegate = self
+        coldStart = Date()
         view.loadFileURL(root.appendingPathComponent("index.html"), allowingReadAccessTo: root)
         timeout = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { _ in
             print("FAIL: Offline editor timed out"); exit(1)
@@ -34,11 +38,14 @@ final class Smoke: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         if message.name == "diagnostics" { fail("JavaScript: \(message.body)") }
         guard let body = message.body as? [String: Any], let type = body["type"] as? String else { fail("Invalid bridge message") }
         switch type {
+        case "warmed":
+            print("Text runtime warm after \(Int(Date().timeIntervalSince(coldStart) * 1000)) ms")
         case "ready":
+            openedAt = Date()
             view.callAsyncJavaScript("""
                 const editor = await window.startTextEditor(input);
                 editor.insertAtCursor(' Offline edit 日本語');
-                window.finishTextEditor();
+                await window.finishTextEditor();
                 return null;
                 """, arguments: ["input": ["session": session, "markdown": source]], in: nil, in: .page) { result in
                 if case .failure(let error) = result { self.fail("Boot/input failed: \(error)") }
@@ -46,15 +53,28 @@ final class Smoke: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         case "loaded":
             guard edits.isEmpty else { fail("Loading changed source") }
             loaded = true
+            print("Page \(stage + 1) ready after \(Int(Date().timeIntervalSince(openedAt) * 1000)) ms")
         case "update":
             guard loaded, body["session"] as? String == session, let markdown = body["markdown"] as? String else { fail("Invalid update loaded=\(loaded): \(body)") }
             edits.append(markdown)
         case "finished":
-            guard loaded, edits.last?.contains("Offline edit 日本語") == true,
-                  edits.last?.contains("**bold**") == true else { fail("Rich input did not round-trip to Markdown: \(edits)") }
-            timeout?.invalidate()
-            print("PASS: Bundled Text loaded from file://, emitted no initial rewrite, edited Unicode and serialized Markdown with no HTTP server.")
-            exit(0)
+            if stage == 0 {
+                guard loaded, edits.last?.contains("Offline edit 日本語") == true,
+                      edits.last?.contains("**bold**") == true else { fail("Rich input did not round-trip") }
+                stage = 1; session = UUID().uuidString; loaded = false; edits = []; openedAt = Date()
+                view.callAsyncJavaScript("""
+                    await window.startTextEditor(input);
+                    await window.finishTextEditor();
+                    return null;
+                    """, arguments: ["input": ["session": session, "markdown": "# Second page\n\nExact **source**\n"]], in: nil, in: .page) { result in
+                    if case .failure(let error) = result { self.fail("Reuse failed: \(error)") }
+                }
+            } else {
+                guard loaded, edits.isEmpty else { fail("Page reuse rewrote source or leaked prior edits") }
+                timeout?.invalidate()
+                print("PASS: Offline Text cold/warm startup, rich Unicode edit, Markdown serialization, and second-page reuse without rewriting source.")
+                exit(0)
+            }
         case "error": fail("Offline editor reported a runtime failure")
         default: fail("Unexpected bridge message: \(type)")
         }
