@@ -43,7 +43,7 @@ struct MarkdownSourceEditor: View {
             Image(systemName: icon).frame(minWidth: 28, minHeight: 26)
         }
         .accessibilityLabel(title)
-        .help(title)
+        .help(command == .link ? "Insert Link (⌘⇧K)" : title)
     }
 }
 
@@ -127,11 +127,14 @@ private struct NativeMarkdownEditor: NSViewRepresentable {
 private final class SourceTextView: NSTextView {
     var format: ((MarkdownEditing.Command) -> Void)?
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if modifiers == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "k" {
+            format?(.link); return true
+        }
+        if modifiers == .command {
             switch event.charactersIgnoringModifiers?.lowercased() {
             case "b": format?(.bold); return true
             case "i": format?(.italic); return true
-            case "k": format?(.link); return true
             default: break
             }
         }
@@ -200,7 +203,7 @@ private final class SourceTextView: UITextView {
         (super.keyCommands ?? []) + [
             UIKeyCommand(input: "b", modifierFlags: .command, action: #selector(boldMarkdown)),
             UIKeyCommand(input: "i", modifierFlags: .command, action: #selector(italicMarkdown)),
-            UIKeyCommand(input: "k", modifierFlags: .command, action: #selector(linkMarkdown))
+            UIKeyCommand(input: "k", modifierFlags: [.command, .shift], action: #selector(linkMarkdown))
         ]
     }
     @objc private func boldMarkdown() { format?(.bold) }

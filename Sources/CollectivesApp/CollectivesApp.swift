@@ -43,6 +43,7 @@ struct CollectivesApp: App {
         .defaultSize(width: 1100, height: 750)
         .windowToolbarStyle(.unifiedCompact)
         .commands {
+            PageNavigationCommands()
             CommandGroup(after: .newItem) {
                 Button("Sync Current Page") { Task { await model.sync() } }
                     .keyboardShortcut("s").disabled(model.busy || model.selectedPage == nil)
@@ -163,6 +164,10 @@ final class AppModel {
         guard !busy else { return }
         busy = true; defer { busy = false }
         await pendingPersistence?.value
+        guard !persistenceFailed else { message = "Save the current draft before switching pages."; return }
+        await loadPage(page)
+    }
+    private func loadPage(_ page: Page) async {
         selectedPage = page
         if let collectiveID = selectedCollective {
             library.visit(pageID: page.id, collectiveID: collectiveID); saveLibrary()
@@ -366,6 +371,21 @@ final class AppModel {
         if selectedCollective != collectiveID { guard await openCollective(collectiveID) else { return } }
         await openPage(page)
     }
+    func openQuickSearchResult(_ result: PageQuickSearchResult, accountID: UUID) async -> Bool {
+        guard !busy, activeID == accountID else { return false }
+        busy = true; defer { busy = false }
+        await pendingPersistence?.value
+        guard !persistenceFailed else {
+            message = "Save the current draft before switching pages."
+            return false
+        }
+        guard let current = PageQuickSearch.results(in: snapshot, query: "").first(where: {
+            $0.id == result.id && $0.collectiveID == result.collectiveID
+        }) else { return false }
+        selectedCollective = current.collectiveID
+        await loadPage(current.page)
+        return true
+    }
     func setEmoji(_ emoji: String?) async throws {
         guard !busy, canEdit, let page = selectedPage, let collectiveID = selectedCollective,
               let accountID = activeID else { throw CollectivesError.invalidResponse }
@@ -447,6 +467,7 @@ struct ContentView: View {
     @State private var search = ""
     @AppStorage("defaultPageMode") private var defaultPageMode = "preview"
     @AppStorage("closeSidebarAfterCollectiveSwitch") private var closeSidebarAfterCollectiveSwitch = false
+    @State private var showCommandPalette = false
     @State private var showSettings = false
     @State private var newPageRequest: NewPageRequest?
     @State private var renamePageRequest: RenamePageRequest?
@@ -663,10 +684,28 @@ struct ContentView: View {
                 }
             }
         }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Command Palette", systemImage: "magnifyingglass") { showCommandPalette = true }
+                    .help("Search all synced pages (⌘K)")
+                    .disabled(model.busy || model.account == nil)
+                    #if !os(macOS)
+                    .keyboardShortcut("k", modifiers: .command)
+                    #endif
+            }
+        }
         #if os(macOS)
+        .focusedSceneValue(\.commandPalette, model.account != nil && !model.busy ? $showCommandPalette : nil)
         .toolbarBackground(AppSurface.chrome, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
         #endif
+        .sheet(isPresented: $showCommandPalette) {
+            if let accountID = model.activeID {
+                CommandPaletteView(model: model, accountID: accountID) {
+                    search = ""; compactColumn = .detail
+                }
+            }
+        }
         .sheet(item: $newPageRequest) { request in
             NewPageSheet(model: model, request: request) {
                 search = ""; compactColumn = .detail

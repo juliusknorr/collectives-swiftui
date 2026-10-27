@@ -76,6 +76,8 @@ Mac and iOS Simulator can reach the Mac's localhost. Physical devices require a 
 
 The account menu at the top of the sidebar switches between accounts on the same or different servers. Offline content and credentials are isolated per account. Expand page groups with their disclosure arrows; selecting a parent page is independent of expanding its children. Search covers page titles and downloaded text in the selected collective, with ancestor context for nested results.
 
+Press **Cmd+K** or use **Command Palette** in the toolbar to jump between locally indexed pages across all collectives in the active account. Search by page title, collective, or ancestor names; recently opened pages appear first with an empty search. Use **↑/↓** to select, **Enter** to open, and **Escape** to dismiss. Downloaded pages open offline without refreshing the collective; pages with only synced metadata need a connection to download their text. The Markdown editor uses **Cmd+Shift+K** to insert a link.
+
 The sidebar gear opens **Settings**, also available through **Collectives > Settings…** on Mac. Settings include:
 
 - Default page mode: **Preview** or **Edit Markdown**. The preference applies when opening another page; changing modes for the current page does not change the default. Read-only pages remain in Preview.
