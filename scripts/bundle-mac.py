@@ -8,6 +8,7 @@ from pathlib import Path
 import plistlib
 import shutil
 import subprocess
+import sys
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("executable", type=Path)
@@ -18,6 +19,7 @@ macos = contents / "MacOS"
 notices = Path(__file__).resolve().parents[1] / "ThirdParty"
 icon = Path(__file__).resolve().parents[1] / "Resources" / "AppIcon.icns"
 embedded_text = Path(__file__).resolve().parents[1] / "Resources" / "EmbeddedText"
+subprocess.run([sys.executable, str(Path(__file__).with_name("build-embedded-text.py"))], check=True)
 signing_directory = Path(__file__).resolve().parents[1] / ".local-signing"
 identity = os.environ.get("COLLECTIVES_SIGNING_IDENTITY")
 keychain = os.environ.get("COLLECTIVES_SIGNING_KEYCHAIN")

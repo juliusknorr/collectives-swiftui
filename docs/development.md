@@ -142,13 +142,20 @@ server-side Text sessions are not implemented in this prototype.
 The bundled editor receives no credentials or server URL. Network connections
 and external navigation are blocked. See
 [the embedded editor notes](../Resources/EmbeddedText/README.md) for source revision,
-licenses, build adjustments, and asset regeneration. A full Text npm install is
-not needed to build the native app.
+licenses, build adjustments, and asset regeneration.
+
+Generated vendor assets are ignored by Git. `make build` / `make run` and Xcode
+prepare them on demand using Python 3 and Node.js 22+ with npm/npx. The first
+build needs access to GitHub and npm; verified unchanged output is reused offline.
+`make text-assets` prepares only the editor assets. CI caches them using the pinned
+lock file and recipe. A full Text npm install is not needed.
 
 Verification:
 
 ```sh
 make test
+python3 -m unittest discover -s scripts/tests -v
+make text-assets
 node scripts/test-embedded-text.cjs
 xcrun swift scripts/test-embedded-text-webkit.swift Resources/EmbeddedText
 # On incomplete preview CLT, add -sdk /path/to/compatible/MacOSX.sdk to xcrun swift.

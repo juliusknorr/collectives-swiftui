@@ -1,7 +1,7 @@
-.PHONY: help build run test server-up server-test server-down signing-setup
+.PHONY: help build run test text-assets server-up server-test server-down signing-setup
 
 help:
-	@printf '%s\n' 'make build        Build the local Mac app bundle' 'make run          Build and open the Mac app (quit an older copy first)' 'make test         Run Swift tests' 'make signing-setup Create a persistent local development signing identity' 'make server-up    Start and seed the local Nextcloud server' 'make server-test  Run integration checks against the running server' 'make server-down  Stop the local server, retaining its data'
+	@printf '%s\n' 'make build        Build the local Mac app bundle' 'make run          Build and open the Mac app (quit an older copy first)' 'make test         Run Swift tests' 'make text-assets  Generate pinned offline Text assets (cached)' 'make signing-setup Create a persistent local development signing identity' 'make server-up    Start and seed the local Nextcloud server' 'make server-test  Run integration checks against the running server' 'make server-down  Stop the local server, retaining its data'
 
 build:
 	@bash scripts/dev.sh build
@@ -23,3 +23,6 @@ server-down:
 
 signing-setup:
 	@python3 scripts/setup-local-signing.py
+
+text-assets:
+	@python3 scripts/build-embedded-text.py

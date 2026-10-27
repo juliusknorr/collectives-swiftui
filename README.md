@@ -47,7 +47,9 @@ See the [usage guide](docs/usage.md) for shortcuts, settings, and conflict handl
 ## Development
 
 For Mac development, install Swift 6+ through Xcode or Apple's Command Line Tools,
-plus Python 3. From the repository root:
+plus Python 3 and Node.js 22+ with npm/npx for the embedded Text assets. The first
+app build fetches pinned dependencies; subsequent builds reuse cached assets.
+From the repository root:
 
 ```sh
 make run   # Build and open .build/Collectives.app

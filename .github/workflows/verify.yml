@@ -7,6 +7,18 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .build/embedded-text
+            Resources/EmbeddedText/vendor
+            ~/.npm
+          key: embedded-text-${{ runner.os }}-${{ hashFiles('Resources/EmbeddedText/text.lock.json', 'scripts/build-embedded-text.py') }}
+      - run: python3 -m unittest discover -s scripts/tests -v
+      - run: make text-assets
       - run: swift test
       - name: Build native Mac app
         run: xcodebuild -project Collectives.xcodeproj -scheme Collectives -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO build

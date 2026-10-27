@@ -44,3 +44,6 @@ venv/
 *~
 # A development worktree may reuse the local signing directory through a symlink.
 .local-signing
+
+# Generated Nextcloud Text assets (make text-assets)
+/Resources/EmbeddedText/vendor/
