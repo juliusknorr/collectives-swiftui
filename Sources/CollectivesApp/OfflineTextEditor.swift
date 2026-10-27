@@ -105,7 +105,15 @@ final class OfflineTextRuntime: NSObject, WKScriptMessageHandler, WKNavigationDe
             ready = true; launchIfReady()
             if finishing { sendFinish() }
         case "warmed": warmed = true
-        case "error": fail("web script reported failure")
+        case "error":
+            let phase = ["warming", "starting", "finishing", "runtime"].first { $0 == (body["phase"] as? String ?? "") } ?? "unknown"
+            let code = ["TypeError", "ReferenceError", "SyntaxError", "RangeError", "URIError", "EvalError",
+                        "AbortError", "NotFoundError", "InvalidStateError", "SecurityError", "ResizeObserverLoop"]
+                .first { $0 == (body["code"] as? String ?? "") } ?? "Unknown"
+            let source = ["vendor", "adapter", "host"].first { $0 == (body["source"] as? String ?? "") } ?? "unknown"
+            let line = (body["line"] as? Int).flatMap { (0...1_000_000).contains($0) ? $0 : nil } ?? 0
+            let column = (body["column"] as? Int).flatMap { (0...1_000_000).contains($0) ? $0 : nil } ?? 0
+            fail("web script \(phase):\(code) \(source):\(line):\(column)")
         default:
             guard let session, body["session"] as? String == session.id.uuidString else { return }
             switch type {

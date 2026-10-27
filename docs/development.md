@@ -157,6 +157,7 @@ make test
 python3 -m unittest discover -s scripts/tests -v
 make text-assets
 node scripts/test-embedded-text.cjs
+node scripts/test-text-startup-diagnostics.cjs
 xcrun swift scripts/test-embedded-text-webkit.swift Resources/EmbeddedText
 # On incomplete preview CLT, add -sdk /path/to/compatible/MacOSX.sdk to xcrun swift.
 ```
@@ -172,3 +173,9 @@ The next experiment is collaboration through Text's existing Yjs provider and
 session API. It needs authenticated create/push/sync/close transport, an exclusive
 handoff from native WebDAV sync, and persisted CRDT state for offline reconnect.
 A generic Yjs WebSocket endpoint is insufficient for Nextcloud Text's protocol.
+
+Editor failures log bounded startup-stage and error-category diagnostics under the
+`org.nextcloud.collectives` subsystem, `TextRuntime` category. They include only an
+allowlisted bundle-source label and bounded line/column numbers. Markdown, arbitrary
+JavaScript exception messages, account data, and file paths are excluded. These
+diagnostics identify failures; they do not suppress or recover from them.

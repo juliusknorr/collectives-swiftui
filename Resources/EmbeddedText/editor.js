@@ -4,10 +4,10 @@
     let revision = 0;
     let operations = Promise.resolve();
     const post = (message) => window.webkit?.messageHandlers.textEditor.postMessage(message);
-    const enqueue = (operation) => {
+    const enqueue = (operation, phase) => {
         operations = operations.then(operation).catch(error => {
             console.error(error);
-            window.reportTextError();
+            window.reportTextError(error, phase);
         });
         return operations;
     };
@@ -39,7 +39,7 @@
         document.getElementById('editor').inert = false;
         post({ type: 'loaded', session });
         return instance;
-    });
+    }, 'starting');
     window.finishTextEditor = ({ retainContent = false } = {}) => enqueue(() => {
         const finished = session;
         session = undefined;
@@ -47,13 +47,13 @@
         if (retainContent) instance?.freezeMarkdownContent();
         else instance?.resetMarkdownContent('', false);
         post({ type: 'finished', session: finished, retained: retainContent });
-    });
+    }, 'finishing');
     enqueue(async () => {
         // This host only renders the editing UI; disable input directly while idle.
         await create('', false);
         instance.resetMarkdownContent('', false);
         post({ type: 'warmed' });
-    });
+    }, 'warming');
     post({ type: 'ready' });
     if (!window.webkit?.messageHandlers.textEditor) {
         window.startTextEditor({ session: 'browser-smoke', markdown: '# Offline Text\n\nEdit **rich text** without a server.\n\n- [ ] Test a task\n' });

@@ -18,6 +18,8 @@ jobs:
             ~/.npm
           key: embedded-text-${{ runner.os }}-${{ hashFiles('Resources/EmbeddedText/text.lock.json', 'scripts/build-embedded-text.py') }}
       - run: python3 -m unittest discover -s scripts/tests -v
+      - run: node scripts/test-embedded-text.cjs
+      - run: node scripts/test-text-startup-diagnostics.cjs
       - run: make text-assets
       - run: swift test
       - name: Build native Mac app
