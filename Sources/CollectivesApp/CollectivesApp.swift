@@ -853,6 +853,7 @@ final class AppModel {
         let server = try ServerAddress.normalize(login.server)
         let provisional = Account(serverURL: server, userID: login.loginName)
         let userID = try await CollectivesClient(account: provisional, credential: credential).currentUserID()
+        try Task.checkCancellation()
         let existing = accounts.first { $0.serverURL == server && $0.userID == userID }
         let new = Account(id: existing?.id ?? UUID(), serverURL: server, userID: userID)
         try credentials.save(credential, accountID: new.id)
@@ -1355,51 +1356,135 @@ struct ContentView: View {
 
 }
 
+@MainActor @Observable
+final class LoginSession {
+    var isActive = true
+    private(set) var working = false
+    private(set) var status = "Approve access in your browser. Your account password stays there."
+    private let client: LoginFlowClient
+    private let delay: @Sendable () async throws -> Void
+    private let now: @Sendable () -> Date
+    private var server: URL?
+    private var flow: LoginFlow?
+    private var credentials: LoginCredentials?
+    private var deadline: Date?
+
+    init(client: LoginFlowClient = LoginFlowClient(),
+         delay: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(2)) },
+         now: @escaping @Sendable () -> Date = { Date() }) {
+        self.client = client; self.delay = delay; self.now = now
+    }
+    var buttonTitle: String {
+        if credentials != nil { return "Retry Sign-In" }
+        return flow == nil ? "Sign In with Browser" : "Continue Sign-In"
+    }
+    func signIn(serverURL: URL?, openBrowser: @MainActor (URL) -> Void,
+                finish: @MainActor (LoginCredentials) async throws -> Void) async {
+        guard !working else { return }
+        working = true
+        defer { working = false }
+        do {
+            guard let serverURL else { throw CollectivesError.invalidServer }
+            let normalized = try ServerAddress.normalize(serverURL)
+            if server != normalized {
+                flow = nil; credentials = nil; deadline = nil
+                server = normalized
+            }
+            if flow == nil || credentials != nil { deadline = now().addingTimeInterval(20 * 60) }
+            while true {
+                try Task.checkCancellation()
+                if let deadline, now() >= deadline {
+                    if credentials == nil {
+                        flow = nil; self.deadline = nil
+                        status = "Login expired. Try again."
+                    } else {
+                        status = "Could not finish sign-in. Retry when you have a connection."
+                    }
+                    return
+                }
+                guard isActive else {
+                    status = "Return to Collectives after approving access in your browser."
+                    try await delay()
+                    continue
+                }
+                do {
+                    if let credentials {
+                        status = "Completing sign-in…"
+                        try await finish(credentials)
+                        self.credentials = nil; flow = nil; deadline = nil
+                        return
+                    }
+                    if let flow {
+                        if let login = try await client.poll(flow, serverURL: normalized) {
+                            try Task.checkCancellation()
+                            credentials = login
+                            deadline = now().addingTimeInterval(20 * 60)
+                            continue
+                        }
+                        status = "Waiting for browser approval…"
+                    } else {
+                        let created = try await client.begin(serverURL: normalized)
+                        try Task.checkCancellation()
+                        flow = created
+                        status = "Waiting for browser approval…"
+                        openBrowser(created.login)
+                    }
+                    // Let the browser transition update scene state before starting another request.
+                    try await delay()
+                } catch {
+                    try Task.checkCancellation()
+                    guard Self.isTemporaryConnectionError(error) else { throw error }
+                    status = "Connection interrupted. Retrying sign-in…"
+                    try await delay()
+                }
+            }
+        } catch is CancellationError {
+        } catch {
+            status = error.localizedDescription
+        }
+    }
+    private static func isTemporaryConnectionError(_ error: any Error) -> Bool {
+        let error = error as NSError
+        guard error.domain == NSURLErrorDomain else { return false }
+        switch URLError.Code(rawValue: error.code) {
+        case .networkConnectionLost, .timedOut, .notConnectedToInternet,
+             .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed, .cancelled:
+            return true
+        default: return false
+        }
+    }
+}
+
 struct LoginView: View {
     @Bindable var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
     @State private var server = "https://"
-    @State private var status = "Approve access in your browser. Your account password stays there."
+    @State private var session = LoginSession()
     @State private var loginTask: Task<Void, Never>?
-    @State private var working = false
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Connect to Nextcloud").font(.title2)
-            TextField("Server URL", text: $server).textFieldStyle(.roundedBorder).disabled(working)
-            Text(status).font(.callout).textSelection(.enabled)
-            if working { ProgressView() }
+            TextField("Server URL", text: $server).textFieldStyle(.roundedBorder).disabled(session.working)
+            Text(session.status).font(.callout).textSelection(.enabled)
+            if session.working { ProgressView() }
             HStack {
                 Button("Cancel") { loginTask?.cancel(); dismiss() }
                 Spacer()
-                Button("Sign In with Browser") { begin() }.disabled(working)
+                Button(session.buttonTitle) { begin() }.disabled(session.working)
             }
         }.padding(24).frame(minWidth: 300, idealWidth: 440)
         .onAppear { server = model.loginServer }
+        .onChange(of: scenePhase, initial: true) { _, phase in session.isActive = phase == .active }
         .onDisappear { loginTask?.cancel() }
     }
     private func begin() {
-        working = true
         loginTask = Task { @MainActor in
-            defer { working = false }
-            do {
-                guard let url = URL(string: server) else { throw CollectivesError.invalidServer }
-                let api = LoginFlowClient()
-                let flow = try await api.begin(serverURL: url)
-                openURL(flow.login)
-                status = "Waiting for browser approval…"
-                let deadline = Date().addingTimeInterval(20 * 60)
-                while Date() < deadline {
-                    try Task.checkCancellation()
-                    if let login = try await api.poll(flow, serverURL: url) {
-                        try Task.checkCancellation()
-                        try await model.addAccount(login)
-                        dismiss(); return
-                    }
-                    try await Task.sleep(for: .seconds(2))
-                }
-                status = "Login expired. Try again."
-            } catch is CancellationError {} catch { status = error.localizedDescription }
+            await session.signIn(serverURL: URL(string: server), openBrowser: { openURL($0) }) { login in
+                try await model.addAccount(login)
+                dismiss()
+            }
         }
     }
 }
