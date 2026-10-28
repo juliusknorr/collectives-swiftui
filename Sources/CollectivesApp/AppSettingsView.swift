@@ -67,7 +67,9 @@ struct AppSettingsView: View {
                             Button("Export Backup…") { export(account) }
                             Spacer()
                             Button("Remove…", role: .destructive) { accountToRemove = account }
-                        }.controlSize(.small)
+                        }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
                     }.padding(.vertical, 5)
                 }
                 Button("Add Account…", systemImage: "person.badge.plus") { login(server: nil) }
