@@ -52,9 +52,9 @@ struct CollectivesApp: App {
             PageNavigationCommands()
             CommandGroup(after: .newItem) {
                 Button("Sync Current Page") { Task { await model.sync() } }
-                    .keyboardShortcut("s").disabled(model.busy || model.syncing || model.selectedPage == nil)
+                    .keyboardShortcut("s").disabled(model.busy || model.syncing || model.pageMode == .richText || model.selectedPage == nil)
                 Button("Sync All Accounts") { Task { await model.syncAccounts() } }
-                    .keyboardShortcut("s", modifiers: [.command, .shift]).disabled(model.busy || model.syncing)
+                    .keyboardShortcut("s", modifiers: [.command, .shift]).disabled(model.busy || model.syncing || model.pageMode == .richText)
                 Toggle("Automatically Sync Active Account", isOn: $automaticSync)
             }
         }
@@ -351,7 +351,7 @@ final class AppModel {
         }
         guard let cached = snapshot.documents[key] else { return }
         selectedPage = page
-        pageMode = modePreferences.modeForPage(canEdit: canEdit, hasConflict: cached.conflict != nil)
+        pageMode = modeForPage(hasConflict: cached.conflict != nil)
         if let collectiveID = selectedCollective {
             library.visit(pageID: page.id, collectiveID: collectiveID); saveLibrary()
         }
@@ -368,7 +368,7 @@ final class AppModel {
         if !persistenceFailed, let doc = snapshot.documents[String(pageID)] {
             selectedCollective = doc.collectiveID
             selectedPage = doc.page
-            pageMode = modePreferences.modeForPage(canEdit: canEdit, hasConflict: doc.conflict != nil)
+            pageMode = modeForPage(hasConflict: doc.conflict != nil)
             library.visit(pageID: doc.page.id, collectiveID: doc.collectiveID); saveLibrary()
             text = doc.draft ?? doc.markdown
             message = doc.conflict == nil ? "Local draft waiting to sync." : "Conflict: compare your draft with the server version."
@@ -401,12 +401,20 @@ final class AppModel {
             } catch { savingDraft = false; persistenceFailed = true; message = "Draft not saved: \(error.localizedDescription)" }
         }
     }
+    private func modeForPage(hasConflict: Bool) -> PageViewMode {
+        let preferred = modePreferences.modeForPage(canEdit: canEdit, hasConflict: hasConflict)
+        return syncing && preferred == .richText ? .view : preferred
+    }
     private func resumeTextEditing() {
-        guard pageMode == .richText, !busy, textSession == nil, document != nil else { return }
+        guard pageMode == .richText, !busy, !syncing, textSession == nil, document != nil else { return }
         Task { await beginTextEditing() }
     }
     func changePageMode(_ mode: PageViewMode) async {
         guard !busy, mode != pageMode else { return }
+        guard mode != .richText || !syncing else {
+            message = "Finish or cancel sync before opening Rich Text."
+            return
+        }
         busy = true
         await finishTextEditing()
         pageMode = !canEdit ? .view : (mode == .richText && document?.conflict != nil ? .edit : mode)
@@ -420,7 +428,7 @@ final class AppModel {
         await prepareTextEditing()
     }
     private func prepareTextEditing() async {
-        guard pageMode == .richText, textSession == nil, canEdit,
+        guard pageMode == .richText, !syncing, textSession == nil, canEdit,
               let accountID = activeID, let page = selectedPage,
               let document, document.conflict == nil else { return }
         await pendingPersistence?.value
@@ -955,7 +963,7 @@ final class AppModel {
         let previous = snapshot
         snapshot = result.snapshot
         selectedPage = result.page
-        pageMode = modePreferences.modeForPage(canEdit: canEdit, hasConflict: false)
+        pageMode = modeForPage(hasConflict: false)
         text = document?.draft ?? document?.markdown ?? ""
         library.visit(pageID: result.page.id, collectiveID: collectiveID); saveLibrary()
         do {
@@ -1509,6 +1517,7 @@ struct ContentView: View {
             HStack(spacing: 12) {
                 Menu {
                     Button("Sync All Accounts", systemImage: "arrow.triangle.2.circlepath") { Task { await model.syncAccounts() } }
+                        .disabled(model.pageMode == .richText)
                     Button("Refresh All Collectives", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
                     Divider()
                     Toggle("Auto-sync Active Account", isOn: $automaticSync)

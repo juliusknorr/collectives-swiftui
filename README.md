@@ -13,7 +13,7 @@ Nextcloud server and keeps your changes in sync.
 
 ## What you can do
 
-- Read formatted pages and edit their Markdown source.
+- Read formatted pages and edit their Markdown source, or try experimental offline rich text.
 - Browse nested pages, search downloaded content, and save favorites.
 - Download pages for offline reading and editing, then sync when connected.
 - Create and rename pages online.

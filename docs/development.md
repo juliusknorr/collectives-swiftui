@@ -111,7 +111,7 @@ Dependency versions are recorded in `Package.resolved`; bundled notices live in 
 
 ## Experimental offline Nextcloud Text
 
-The `poc/nextcloud-text` branch embeds a pinned Nextcloud Text build in a local
+The app embeds a pinned Nextcloud Text build in a local
 WKWebView on Mac and iOS. Build normally with `make run`, select a downloaded,
 editable page, then select **Rich Text** beside **View / Edit** in the page toolbar.
 It runs inline without a web server or network connection. Text edits save into
@@ -211,3 +211,15 @@ pending edits, network requests, and painting; it is not a measurement of visibl
 page-switch latency. Mixed fixtures deliberately stress table/task node views, so
 compare prose and structured workloads separately. Compare runs on the same machine
 and do not treat these timings as CI pass/fail thresholds.
+
+### Rich-text integration with storage and sync
+
+Original Markdown backups are stored in the incremental account metadata, including
+when migrating legacy snapshots. They survive document-only saves, cold reopening,
+and sync checkpoints that began before a backup was created. Existing metadata
+without backups remains readable.
+
+Rich Text and native server sync have exclusive lifetimes. Finish or cancel an
+active sync before entering Rich Text. If a page's preferred mode is Rich Text
+while sync is running, that page opens in View; Markdown source editing remains
+available. Server sync actions are disabled until Rich Text is closed.

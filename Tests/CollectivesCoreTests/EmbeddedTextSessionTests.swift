@@ -47,7 +47,8 @@ import Testing
     let store = LocalStore(root: root)
     try await store.saveSnapshot(snapshot, accountID: accountID)
     snapshot.documents["42"]?.draft = "# Rich-text edit\n"
-    try await store.saveSnapshot(snapshot, accountID: accountID)
+    let edited = try #require(snapshot.documents["42"])
+    try await store.saveDocument(edited, accountID: accountID)
     let reopened = try await LocalStore(root: root).snapshot(accountID: accountID)
     #expect(reopened.textSourceBackups?["42"] == source)
     #expect(reopened.documents["42"]?.draft == "# Rich-text edit\n")
@@ -66,4 +67,18 @@ import Testing
     #expect(migrated.textSourceBackups?["42"] == source)
     let reopened = try await LocalStore(root: root).snapshot(accountID: accountID)
     #expect(reopened.textSourceBackups?["42"] == source)
+}
+
+@Test func syncCheckpointPreservesOriginalTextBackupsAddedWhileSyncing() {
+    var baseline = AccountSnapshot()
+    baseline.rememberTextSource(pageID: 42, markdown: "Original source")
+    var local = baseline
+    local.rememberTextSource(pageID: 43, markdown: "New local backup")
+    var checkpoint = baseline
+    checkpoint.textSourceBackups?["42"] = "Normalized checkpoint source"
+    checkpoint.rememberTextSource(pageID: 44, markdown: "Other backup")
+    let merged = local.mergingSync(checkpoint, startedFrom: baseline)
+    #expect(merged.textSourceBackups?["42"] == "Original source")
+    #expect(merged.textSourceBackups?["43"] == "New local backup")
+    #expect(merged.textSourceBackups?["44"] == "Other backup")
 }
