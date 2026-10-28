@@ -47,11 +47,13 @@ struct SyncActivity {
 
 struct SyncProgressView: View {
     let activity: SyncActivity
+    var isCancelling = false
+    var cancel: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
-                Text(activity.title).font(.callout.weight(.medium))
+                Text(isCancelling ? "Cancelling sync…" : activity.title).font(.callout.weight(.medium))
                 Spacer(minLength: 8)
                 if let count = activity.pageCount { Text(count).font(.caption).monospacedDigit() }
             }
@@ -74,9 +76,17 @@ struct SyncProgressView: View {
                 if activity.progress.failureCount > 0 {
                     Text("\(activity.progress.failureCount) failed").foregroundStyle(.orange)
                 }
+                Spacer(minLength: 8)
+                if let cancel {
+                    Button("Cancel", systemImage: "xmark.circle", action: cancel)
+                        .buttonStyle(.borderless)
+                        .disabled(isCancelling)
+                        .accessibilityLabel("Cancel sync")
+                }
             }.font(.caption).foregroundStyle(.secondary)
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Sync progress")
     }
 }
 
@@ -86,7 +96,7 @@ struct SyncStatusView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let activity = model.syncActivity { SyncProgressView(activity: activity) }
+            if let activity = model.syncActivity { SyncProgressView(activity: activity, isCancelling: model.isCancellingSync, cancel: { model.cancelSync() }) }
             else if model.activeID.map({ model.syncIssues[$0] == nil }) == true {
                 Label(model.syncSummary, systemImage: model.syncSymbol).font(.callout)
             }

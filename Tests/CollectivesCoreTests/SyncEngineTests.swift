@@ -155,3 +155,24 @@ func unusableRemoteRevisionCannotOverwritePage(revision: String?) async throws {
     #expect(updated.conflict == nil)
     #expect(updated.etag == "\"saved\"")
 }
+
+private actor CancelledRevisionFetch: DocumentAPI {
+    private(set) var uploads = 0
+    func download(page: Page) async throws -> RemoteDocument {
+        withUnsafeCurrentTask { $0?.cancel() }
+        return RemoteDocument(markdown: "base", etag: "\"base\"")
+    }
+    func upload(page: Page, markdown: String, etag: String?) async throws -> String? {
+        uploads += 1
+        return "\"saved\""
+    }
+}
+
+@Test func cancellationAfterRevisionFetchDoesNotStartUpload() async throws {
+    let api = CancelledRevisionFetch()
+    let task = Task {
+        try await DocumentSynchronizer.synchronize(document: syncDocument(etag: nil), api: api)
+    }
+    await #expect(throws: CancellationError.self) { try await task.value }
+    #expect(await api.uploads == 0)
+}

@@ -78,6 +78,9 @@ final class AppModel {
     var message = ""
     var busy = false
     var syncing = false
+    private(set) var isCancellingSync = false
+    private(set) var automaticSyncPaused = false
+    var canCancelSync: Bool { (syncing || syncActivity != nil) && !isCancellingSync }
     var syncActivity: SyncActivity?
     var syncIssues: [UUID: SyncIssue] = [:]
     var showLogin = false
@@ -128,17 +131,20 @@ final class AppModel {
     var syncSummary: String {
         if savingDraft { return "Saving locally…" }
         if draftSaveFailed { return "Changes not saved" }
+        if isCancellingSync { return "Cancelling sync…" }
         if let activity = syncActivity { return activity.summary }
         if syncing { return "Syncing…" }
         if let id = activeID, let issue = syncIssues[id] {
             return issue.requiresSignIn ? "Sign in to sync" : "Sync needs attention"
         }
         if conflictCount > 0 { return "\(conflictCount) \(conflictCount == 1 ? "conflict" : "conflicts") to review" }
+        if automaticSyncPaused { return "Sync paused" }
         return pendingCount == 0 ? "No pending drafts" : "\(pendingCount) pending \(pendingCount == 1 ? "draft" : "drafts")"
     }
     var syncSymbol: String {
         if draftSaveFailed || conflictCount > 0 { return "exclamationmark.triangle" }
         if let id = activeID, syncIssues[id] != nil { return "exclamationmark.icloud" }
+        if automaticSyncPaused { return "pause.circle" }
         return pendingCount > 0 ? "pencil.circle" : "checkmark.icloud"
     }
 
@@ -333,9 +339,10 @@ final class AppModel {
     }
     func sync() async {
         guard !busy, !syncing, let page = selectedPage, let target = account else { return }
-        syncing = true; defer { syncing = false; syncActivity = nil; syncBaselines = [:] }
+        automaticSyncPaused = false
+        syncing = true; defer { finishSync() }
         await pendingPersistence?.value
-        guard !persistenceFailed, activeID == target.id, selectedPage?.id == page.id,
+        guard !persistenceFailed, !isCancellingSync, activeID == target.id, selectedPage?.id == page.id,
               let doc = snapshot.documents[String(page.id)] else { return }
         guard doc.conflict == nil else { message = "Review the conflict before syncing."; return }
         let base = snapshot
@@ -354,54 +361,67 @@ final class AppModel {
                     syncActivity = SyncActivity(account: target, accountIndex: 1, accountTotal: 1, progress: progress)
                 }
                 try await applySync(next, startedFrom: base, accountID: target.id)
+                try Task.checkCancellation()
                 syncIssues[target.id] = nil
                 if activeID == target.id, selectedPage?.id == page.id {
                     message = document?.conflict == nil ? "Synced with server." : "Server changed. Your changes are saved for review."
                 }
             }
         } catch {
-            if canSyncAccount(target.id), !(error is CancellationError) {
+            if canSyncAccount(target.id), !isCancellingSync, !Task.isCancelled, !(error is CancellationError) {
                 syncIssues[target.id] = SyncIssue(error: error)
             }
         }
+        if isCancellingSync { await pendingPersistence?.value }
     }
     func downloadCollective() async {
         guard !busy, !syncing, let collectiveID = selectedCollective, let id = activeID else { return }
-        busy = true; defer { busy = false; syncActivity = nil }
+        automaticSyncPaused = false
+        busy = true; defer { busy = false; finishSync() }
         await pendingPersistence?.value
-        guard !persistenceFailed, let target = account else { return }
+        guard !persistenceFailed, !isCancellingSync, let target = account else { return }
         message = "Downloading page text for offline use…"
         let previous = snapshot
         do {
-            let localStore = store
-            let result = try await AccountSynchronizer.download(collectiveID: collectiveID, snapshot: snapshot, api: client(), progress: { progress in
-                await self.reportSyncProgress(progress, account: target, index: 1, total: 1)
-            }) { value in
-                try await localStore.saveSnapshot(value, accountID: id)
+            try await performAccountSync(id) { [self] in
+                let localStore = store
+                let result = try await AccountSynchronizer.download(collectiveID: collectiveID, snapshot: snapshot, api: client(), progress: { progress in
+                    await self.reportSyncProgress(progress, account: target, index: 1, total: 1)
+                }) { value in
+                    try Task.checkCancellation()
+                    try await localStore.saveSnapshot(value, accountID: id)
+                }
+                try Task.checkCancellation()
+                snapshot = result.snapshot
+                reconcileSelection()
+                message = result.failures.isEmpty
+                    ? "Downloaded \(downloadedCount) page bodies. Existing drafts preserved. Images and attachments are not downloaded yet."
+                    : "Download incomplete; \(result.failures.count) pages need retry. Saved pages remain offline."
             }
-            snapshot = result.snapshot
-            reconcileSelection()
-            message = result.failures.isEmpty
-                ? "Downloaded \(downloadedCount) page bodies. Existing drafts preserved. Images and attachments are not downloaded yet."
-                : "Download incomplete; \(result.failures.count) pages need retry. Saved pages remain offline."
         } catch {
-            // Keep successful checkpoints if a later step fails.
+            // Keep successful checkpoints if a later step fails or the user cancels.
             snapshot = (try? await store.snapshot(accountID: id)) ?? previous
             reconcileSelection()
-            message = "Download incomplete; saved pages remain offline. \(error.localizedDescription)"
+            if !isCancellingSync {
+                message = "Download incomplete; saved pages remain offline. \(error.localizedDescription)"
+            }
         }
     }
     @discardableResult
     func syncAccounts(automatic: Bool = false) async -> Bool {
         guard !busy, !syncing, !showLogin, !settingsLogin else { return false }
-        if automatic && Date().timeIntervalSince(lastEdit) < 5 { return false }
-        syncing = true; defer { syncing = false; syncActivity = nil; syncBaselines = [:] }
+        if automatic && (automaticSyncPaused || Date().timeIntervalSince(lastEdit) < 5) { return false }
+        if !automatic { automaticSyncPaused = false }
+        syncing = true; defer { finishSync() }
         await pendingPersistence?.value
-        guard !persistenceFailed else { return false }
+        guard !persistenceFailed, !isCancellingSync else { return false }
         let targets = automatic ? accounts.filter { $0.id == activeID } : accounts
         for target in targets {
             guard canSyncAccount(target.id) else { continue }
-            if Task.isCancelled { return false }
+            if Task.isCancelled || isCancellingSync {
+                await pendingPersistence?.value
+                return false
+            }
             do {
                 try await performAccountSync(target.id) { [self] in
                     let base = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
@@ -419,23 +439,44 @@ final class AppModel {
                     } else { syncIssues[target.id] = nil }
                 }
             } catch {
-                if Task.isCancelled { return false }
+                if Task.isCancelled || isCancellingSync {
+                    await pendingPersistence?.value
+                    return false
+                }
                 guard canSyncAccount(target.id), !(error is CancellationError) else { continue }
                 collectiveListingErrors[target.id] = error.localizedDescription
                 syncIssues[target.id] = SyncIssue(error: error)
             }
         }
-        return true
+        if isCancellingSync { await pendingPersistence?.value }
+        return !isCancellingSync
+    }
+
+    func cancelSync() {
+        guard canCancelSync else { return }
+        isCancellingSync = true
+        automaticSyncPaused = true
+        remoteSyncRequested = false
+        for task in accountSyncTasks.values { task.cancel() }
+    }
+    private func finishSync() {
+        if isCancellingSync && !persistenceFailed {
+            message = "Sync canceled. Saved pages and drafts are kept. Sync manually to resume automatic sync."
+        }
+        syncing = false
+        syncActivity = nil
+        syncBaselines = [:]
+        isCancellingSync = false
     }
 
     private func canSyncAccount(_ id: UUID) -> Bool {
         accounts.contains { $0.id == id } && !removingAccountIDs.contains(id)
     }
     private func performAccountSync(_ id: UUID, operation: @escaping @MainActor () async throws -> Void) async throws {
-        guard canSyncAccount(id) else { throw CancellationError() }
+        guard canSyncAccount(id), !isCancellingSync else { throw CancellationError() }
         let task = Task { @MainActor in
             try Task.checkCancellation()
-            guard self.canSyncAccount(id) else { throw CancellationError() }
+            guard self.canSyncAccount(id), !self.isCancellingSync else { throw CancellationError() }
             try await operation()
         }
         accountSyncTasks[id] = task
@@ -450,7 +491,7 @@ final class AppModel {
         reportSyncProgress(progress, account: account, index: index + 1, total: remaining.count)
     }
     private func reportSyncProgress(_ progress: AccountSyncProgress, account: Account, index: Int, total: Int) {
-        guard canSyncAccount(account.id) else { return }
+        guard canSyncAccount(account.id), !isCancellingSync else { return }
         syncActivity = SyncActivity(account: account, accountIndex: index, accountTotal: total, progress: progress)
     }
 
@@ -521,12 +562,12 @@ final class AppModel {
             while !Task.isCancelled && automaticSyncGeneration == generation {
                 let now = Date()
                 let interval: TimeInterval = pushConnected ? 15 * 60 : 60
-                if remoteSyncRequested || now.timeIntervalSince(lastRefresh) >= interval {
+                if !automaticSyncPaused && (remoteSyncRequested || now.timeIntervalSince(lastRefresh) >= interval) {
                     // Clear first so a push arriving during the request schedules another pass.
                     remoteSyncRequested = false
                     if await syncAccounts(automatic: true) { lastRefresh = now; lastDraftSync = now }
                     else { remoteSyncRequested = true }
-                } else if now.timeIntervalSince(lastDraftSync) >= 30 {
+                } else if !automaticSyncPaused && now.timeIntervalSince(lastDraftSync) >= 30 {
                     await syncPending(automatic: true)
                     lastDraftSync = now
                 }
@@ -594,14 +635,19 @@ final class AppModel {
     func syncPending(automatic: Bool = false) async {
         guard !busy, !syncing, !showLogin, !settingsLogin else { return }
         if automatic {
-            guard Date().timeIntervalSince(lastEdit) >= 5,
+            guard !automaticSyncPaused, Date().timeIntervalSince(lastEdit) >= 5,
                   snapshot.documents.values.contains(where: { $0.draft != nil && $0.conflict == nil }) else { return }
         }
-        syncing = true; defer { syncing = false; syncActivity = nil; syncBaselines = [:] }
+        if !automatic { automaticSyncPaused = false }
+        syncing = true; defer { finishSync() }
         await pendingPersistence?.value
-        guard !persistenceFailed else { return }
+        guard !persistenceFailed, !isCancellingSync else { return }
         let targets = automatic ? accounts.filter { $0.id == activeID } : accounts
         for target in targets {
+            if isCancellingSync || Task.isCancelled {
+                await pendingPersistence?.value
+                return
+            }
             guard canSyncAccount(target.id) else { continue }
             do {
                 try await performAccountSync(target.id) { [self] in
@@ -620,11 +666,15 @@ final class AppModel {
                     // Draft-only sync cannot establish that a previous account refresh error has recovered.
                 }
             } catch {
-                if Task.isCancelled { return }
+                if Task.isCancelled || isCancellingSync {
+                    await pendingPersistence?.value
+                    return
+                }
                 guard canSyncAccount(target.id), !(error is CancellationError) else { continue }
                 syncIssues[target.id] = SyncIssue(error: error)
             }
         }
+        if isCancellingSync { await pendingPersistence?.value }
     }
     private func updateEditor() {
         if let doc = document { text = doc.draft ?? doc.markdown }
@@ -860,7 +910,7 @@ struct ContentView: View {
         }
         .safeAreaInset(edge: .bottom) {
             if let activity = model.syncActivity {
-                SyncProgressView(activity: activity)
+                SyncProgressView(activity: activity, isCancelling: model.isCancellingSync, cancel: { model.cancelSync() })
                     .frame(maxWidth: 820)
                     .padding(.horizontal).padding(.vertical, 10)
                     .frame(maxWidth: .infinity)

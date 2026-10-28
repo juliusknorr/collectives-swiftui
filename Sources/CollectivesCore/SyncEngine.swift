@@ -16,10 +16,12 @@ extension CollectivesClient: DocumentAPI {}
 
 public enum DocumentSynchronizer {
     public static func synchronize(document: CachedDocument, api: any DocumentAPI) async throws -> CachedDocument {
+        try Task.checkCancellation()
         guard document.conflict == nil else { return document }
         var updated = document
         guard let draft = document.draft else {
             guard let remote = try await api.download(page: document.page, ifNoneMatch: document.etag) else { return updated }
+            try Task.checkCancellation()
             updated.markdown = remote.markdown
             updated.etag = remote.etag
             return updated
@@ -28,6 +30,7 @@ public enum DocumentSynchronizer {
         var revision = document.etag
         if !isStrong(revision) {
             let remote = try await api.download(page: document.page)
+            try Task.checkCancellation()
             if remote.markdown == draft { return reconcile(document: document, remote: remote) }
             guard remote.markdown == document.markdown else {
                 updated.conflict = remote
@@ -38,13 +41,17 @@ public enum DocumentSynchronizer {
         guard isStrong(revision) else { throw CollectivesError.missingETag }
 
         do {
+            try Task.checkCancellation()
             let newRevision = try await api.upload(page: document.page, markdown: draft, etag: revision)
+            try Task.checkCancellation()
             updated.markdown = draft
             updated.draft = nil
             updated.etag = newRevision
         } catch CollectivesError.conflict {
+            try Task.checkCancellation()
             return reconcile(document: document, remote: try await api.download(page: document.page))
         } catch CollectivesError.http(412) {
+            try Task.checkCancellation()
             return reconcile(document: document, remote: try await api.download(page: document.page))
         }
         return updated

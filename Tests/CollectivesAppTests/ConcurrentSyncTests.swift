@@ -469,3 +469,198 @@ func removingAccountDuringSyncRetainsUnsyncedDraftsAndConflicts(conflictOnly: Bo
     #expect(fixture.model.syncIssues[account.id]?.requiresSignIn == true)
     #expect(try await fixture.store.accounts() == fixture.accounts)
 }
+
+@MainActor
+@Test(arguments: [200, 401])
+func cancellingPageSyncIgnoresLateResponseAndPreservesExistingIssue(status: Int) async throws {
+    let fixture = try await ConcurrentSyncFixture()
+    defer { fixture.cleanup() }
+    let accountID = fixture.accounts[0].id
+    fixture.model.syncIssues[accountID] = SyncIssue(message: "Previous sync needs attention")
+    let sync = Task { await fixture.model.sync() }
+    await fixture.transport.waitForDocumentRequest()
+
+    fixture.model.cancelSync()
+
+    #expect(fixture.model.isCancellingSync)
+    #expect(fixture.model.syncing)
+    #expect(fixture.model.syncActivity != nil)
+    #expect(fixture.model.automaticSyncPaused)
+    await fixture.transport.respond(status: status, body: "late server copy")
+    await sync.value
+
+    #expect(!fixture.model.syncing)
+    #expect(!fixture.model.busy)
+    #expect(!fixture.model.isCancellingSync)
+    #expect(fixture.model.syncActivity == nil)
+    #expect(fixture.model.text == "first page 70")
+    #expect(fixture.model.syncIssues[accountID]?.message == "Previous sync needs attention")
+    let saved = try await LocalStore(root: fixture.root).snapshot(accountID: accountID)
+    #expect(saved.documents["70"]?.markdown == "first page 70")
+}
+
+@MainActor
+@Test func cancellingFullSyncStopsAllAdmittedRequestsAndSkipsNextAccount() async throws {
+    let fixture = try await ConcurrentSyncFixture()
+    defer { fixture.cleanup() }
+    let sync = Task { await fixture.model.syncAccounts() }
+    await fixture.transport.waitForDocumentRequest(count: 2)
+
+    fixture.model.cancelSync()
+    await fixture.transport.respond(status: 401, body: "")
+    #expect(!(await sync.value))
+
+    #expect(await fixture.transport.documentRequestHosts == ["first.invalid", "first.invalid"])
+    #expect(fixture.model.syncIssues.isEmpty)
+    #expect(fixture.model.collectiveListingErrors.isEmpty)
+    #expect(fixture.model.syncActivity == nil)
+    #expect(!fixture.model.syncing)
+    #expect(!fixture.model.isCancellingSync)
+    for account in fixture.accounts {
+        let saved = try await LocalStore(root: fixture.root).snapshot(accountID: account.id)
+        #expect(saved.documents["70"]?.markdown == "\(account.userID) page 70")
+        #expect(saved.documents["71"]?.markdown == "\(account.userID) page 71")
+    }
+}
+
+@MainActor
+@Test func cancellingFullSyncKeepsCompletedCheckpointAndNewerEditorDraft() async throws {
+    let fixture = try await ConcurrentSyncFixture()
+    defer { fixture.cleanup() }
+    let sync = Task { await fixture.model.syncAccounts() }
+    await fixture.transport.waitForDocumentRequest(count: 2)
+    await fixture.transport.respond(pageID: 71, body: "completed page checkpoint")
+    let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+    while fixture.model.syncActivity?.progress.completedPages != 1 && ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(fixture.model.syncActivity?.progress.completedPages == 1)
+    fixture.model.edited("draft written before cancelling")
+
+    fixture.model.cancelSync()
+    await fixture.transport.respond(body: "late selected page response")
+    #expect(!(await sync.value))
+
+    #expect(fixture.model.text == "draft written before cancelling")
+    #expect(fixture.model.document?.draft == "draft written before cancelling")
+    #expect(fixture.model.document?.markdown == "first page 70")
+    let saved = try await LocalStore(root: fixture.root).snapshot(accountID: fixture.accounts[0].id)
+    #expect(saved.documents["70"]?.draft == "draft written before cancelling")
+    #expect(saved.documents["70"]?.markdown == "first page 70")
+    #expect(saved.documents["71"]?.markdown == "completed page checkpoint")
+    #expect(fixture.model.syncIssues.isEmpty)
+    #expect(await fixture.transport.documentRequestHosts == ["first.invalid", "first.invalid"])
+}
+
+@MainActor
+@Test func cancellingDraftSyncPreservesPendingUpload() async throws {
+    let fixture = try await ConcurrentSyncFixture(draft: "pending upload")
+    defer { fixture.cleanup() }
+    let sync = Task { await fixture.model.syncPending() }
+    await fixture.transport.waitForDocumentRequest()
+    fixture.model.edited("newer pending draft")
+
+    fixture.model.cancelSync()
+    await fixture.transport.respond(status: 204, body: "")
+    await sync.value
+
+    #expect(fixture.model.text == "newer pending draft")
+    #expect(fixture.model.document?.markdown == "first page 70")
+    #expect(fixture.model.document?.draft == "newer pending draft")
+    #expect(fixture.model.document?.etag == "\"base\"")
+    #expect(fixture.model.syncIssues.isEmpty)
+    #expect(!fixture.model.syncing)
+    #expect(fixture.model.syncActivity == nil)
+    let saved = try await LocalStore(root: fixture.root).snapshot(accountID: fixture.accounts[0].id)
+    #expect(saved.documents["70"]?.markdown == "first page 70")
+    #expect(saved.documents["70"]?.draft == "newer pending draft")
+}
+
+@MainActor
+@Test func cancellationPausesAutomaticSyncUntilManualRetry() async throws {
+    let fixture = try await ConcurrentSyncFixture(draft: "pending upload")
+    defer { fixture.cleanup() }
+    let sync = Task { await fixture.model.sync() }
+    await fixture.transport.waitForDocumentRequest()
+    fixture.model.cancelSync()
+    await fixture.transport.respond(status: 204, body: "")
+    await sync.value
+    #expect(fixture.model.automaticSyncPaused)
+
+    #expect(!(await fixture.model.syncAccounts(automatic: true)))
+    await fixture.model.syncPending(automatic: true)
+    #expect(await fixture.transport.documentRequestHosts == ["first.invalid"])
+    #expect(fixture.model.document?.draft == "pending upload")
+
+    await fixture.transport.suspendNextRequest()
+    let retry = Task { await fixture.model.sync() }
+    await fixture.transport.waitForDocumentRequest()
+    #expect(!fixture.model.automaticSyncPaused)
+    #expect(!fixture.model.isCancellingSync)
+    await fixture.transport.respond(status: 204, body: "")
+    await retry.value
+
+    #expect(fixture.model.document?.markdown == "pending upload")
+    #expect(fixture.model.document?.draft == nil)
+    #expect(!fixture.model.syncing)
+    #expect(fixture.model.syncActivity == nil)
+    #expect(fixture.model.syncIssues.isEmpty)
+}
+
+@MainActor
+@Test func cancellingOfflineDownloadRetainsCompletedCheckpoint() async throws {
+    let fixture = try await ConcurrentSyncFixture()
+    defer { fixture.cleanup() }
+    let download = Task { await fixture.model.downloadCollective() }
+    await fixture.transport.waitForDocumentRequest(count: 2)
+    await fixture.transport.respond(pageID: 71, body: "downloaded offline checkpoint")
+    let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+    while fixture.model.syncActivity?.progress.completedPages != 1 && ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(fixture.model.syncActivity?.progress.completedPages == 1)
+
+    fixture.model.cancelSync()
+    #expect(fixture.model.isCancellingSync)
+    await fixture.transport.respond(body: "late offline response")
+    await download.value
+
+    #expect(!fixture.model.busy)
+    #expect(!fixture.model.syncing)
+    #expect(!fixture.model.isCancellingSync)
+    #expect(fixture.model.syncActivity == nil)
+    #expect(fixture.model.syncIssues.isEmpty)
+    #expect(fixture.model.snapshot.documents["70"]?.markdown == "first page 70")
+    #expect(fixture.model.snapshot.documents["71"]?.markdown == "downloaded offline checkpoint")
+    let saved = try await LocalStore(root: fixture.root).snapshot(accountID: fixture.accounts[0].id)
+    #expect(saved.documents["70"]?.markdown == "first page 70")
+    #expect(saved.documents["71"]?.markdown == "downloaded offline checkpoint")
+}
+
+@MainActor
+@Test func cancellationRetainsLocalSaveFailureAndUnsavedEditorText() async throws {
+    let fixture = try await ConcurrentSyncFixture()
+    defer { fixture.cleanup() }
+    let sync = Task { await fixture.model.sync() }
+    await fixture.transport.waitForDocumentRequest()
+    let directory = fixture.root.appendingPathComponent(fixture.accounts[0].id.uuidString)
+    let documents = directory.appendingPathComponent("documents")
+    let retained = directory.appendingPathComponent("retained-documents")
+    try FileManager.default.moveItem(at: documents, to: retained)
+    try Data("Unavailable document directory".utf8).write(to: documents)
+    fixture.model.edited("unsaved editor text")
+    await #expect(throws: CollectivesError.self) {
+        _ = try await fixture.model.accountBackup(fixture.accounts[0].id)
+    }
+    #expect(fixture.model.draftSaveFailed)
+    let failureMessage = fixture.model.message
+    try FileManager.default.removeItem(at: documents)
+    try FileManager.default.moveItem(at: retained, to: documents)
+    fixture.model.cancelSync()
+    await fixture.transport.respond()
+    await sync.value
+    #expect(fixture.model.draftSaveFailed)
+    #expect(fixture.model.message == failureMessage)
+    #expect(fixture.model.text == "unsaved editor text")
+    #expect(fixture.model.document?.draft == "unsaved editor text")
+}
