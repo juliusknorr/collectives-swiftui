@@ -118,7 +118,7 @@ struct SyncStatusView: View {
                             }
                             else { Task { await model.syncAccounts() } }
                         }
-                        .disabled(model.busy || model.syncing)
+                        .disabled(model.busy || model.syncing || (!issue.requiresSignIn && model.pageMode == .richText))
                         if model.syncing { ProgressView().controlSize(.small); Text("Syncing…").font(.caption) }
                     }
                 }

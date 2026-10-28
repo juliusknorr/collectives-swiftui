@@ -5,6 +5,7 @@ struct AppSettingsView: View {
     @Bindable var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @AppStorage("defaultPageMode") private var defaultPageMode = "preview"
+    @AppStorage("rememberPageMode") private var rememberPageMode = false
     @AppStorage("closeSidebarAfterCollectiveSwitch") private var closeSidebarAfterCollectiveSwitch = false
     @AppStorage("automaticSync") private var automaticSync = true
     @State private var accountToRemove: Account?
@@ -29,14 +30,19 @@ struct AppSettingsView: View {
         Form {
             Section {
                 Picker("Default page mode", selection: $defaultPageMode) {
-                    Text("Preview").tag("preview")
-                    Text("Edit Markdown").tag("edit")
+                    ForEach(PageViewMode.allCases, id: \.self) { mode in
+                        Text(mode.title).tag(mode.rawValue)
+                    }
                 }
+                Toggle("Remember last used page mode", isOn: $rememberPageMode)
+                #if os(macOS)
+                    .toggleStyle(.checkbox)
+                #endif
                 Toggle("Close sidebar after switching collective", isOn: $closeSidebarAfterCollectiveSwitch)
             } header: {
                 Text("Pages")
             } footer: {
-                Text("The default mode applies when you open a page. Read-only pages always open in Preview. Closing the sidebar keeps the page list available on larger screens.")
+                Text("When remembering is off, each page opens in the selected default mode. When on, pages use your last chosen mode, including after restarting. Read-only pages open in View. Closing the sidebar keeps the page list available on larger screens.")
             }
             Section {
                 Toggle("Automatically sync active account", isOn: $automaticSync)

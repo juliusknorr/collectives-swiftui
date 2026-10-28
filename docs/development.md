@@ -108,3 +108,118 @@ Dependency versions are recorded in `Package.resolved`; bundled notices live in 
 - `Tests/`: Swift tests for both modules.
 - `dev/`: local Nextcloud server, fixtures, and integration checks.
 - `scripts/`: Mac build, bundling, and local signing helpers.
+
+## Experimental offline Nextcloud Text
+
+The app embeds a pinned Nextcloud Text build in a local
+WKWebView on Mac and iOS. Build normally with `make run`, select a downloaded,
+editable page, then select **Rich Text** beside **View / Edit** in the page toolbar.
+It runs inline without a web server or network connection. Text edits save into
+the same local Markdown drafts as source editing. Native sync pauses in Rich Text;
+switch to View or Edit to resume. Page/account changes flush and persist editor
+updates before navigating. The original-source recovery action remains in the
+**Aa** menu.
+
+The app prewarms one local WebKit runtime at launch and reuses its parsed modules
+and styles across pages. A small pinned Text embedding extension replaces the
+document in the mounted editor and resets its plugin state, selection and undo
+history. During a same-account page switch, the previous document stays visible
+but inert until the next document replaces it. Downloads keep the current page
+on screen until the new page is available. Mode/account changes clear retained
+content. This avoids blank frames and rebuilding Vue/Tiptap on every page switch. The web view stays mounted and visible; a loading indicator
+appears only after 180 ms to avoid flashing during fast transitions. View and Edit
+stay available during cold startup. Local offline WebKit checks measured about
+13–18 ms for a subsequent page; actual time depends on the device and document. Settings let you choose the
+default mode or remember your most recently selected mode.
+
+Rich edits can normalize Markdown and discard unsupported syntax. Before the
+first Text session on a page, the app saves the exact source in the account's
+local snapshot. **Restore Source from Before Text Editing…** in the same menu
+restores that copy as a draft. Opening without editing leaves the source alone.
+Try this on sample pages first. Attachments, mentions, live collaboration, and
+server-side Text sessions are not implemented in this prototype.
+
+The bundled editor receives no credentials or server URL. Network connections
+and external navigation are blocked. See
+[the embedded editor notes](../Resources/EmbeddedText/README.md) for source revision,
+licenses, build adjustments, and asset regeneration.
+
+Generated vendor assets are ignored by Git. `make build` / `make run` and Xcode
+prepare them on demand using Python 3 and Node.js 22+ with npm/npx. The first
+build needs access to GitHub and npm; verified unchanged output is reused offline.
+`make text-assets` prepares only the editor assets. CI caches them using the pinned
+lock file and recipe. A full Text npm install is not needed.
+
+Verification:
+
+```sh
+make test
+python3 -m unittest discover -s scripts/tests -v
+make text-assets
+node scripts/test-embedded-text.cjs
+node scripts/test-text-startup-diagnostics.cjs
+xcrun swift scripts/test-embedded-text-webkit.swift Resources/EmbeddedText
+# On incomplete preview CLT, add -sdk /path/to/compatible/MacOSX.sdk to xcrun swift.
+```
+
+The WebKit smoke uses a synthetic document, loads the actual bundled editor from
+`file://`, verifies no initial source rewrite, and checks that a Unicode edit
+serializes back to Markdown. It also measures startup and verifies a second page
+opens in the same runtime without rewriting source or leaking edits. It does not
+contact Nextcloud or modify pages.
+iOS device and App Store sandbox validation remain separate checks.
+
+The next experiment is collaboration through Text's existing Yjs provider and
+session API. It needs authenticated create/push/sync/close transport, an exclusive
+handoff from native WebDAV sync, and persisted CRDT state for offline reconnect.
+A generic Yjs WebSocket endpoint is insufficient for Nextcloud Text's protocol.
+
+Editor failures log bounded startup-stage and error-category diagnostics under the
+`org.nextcloud.collectives` subsystem, `TextRuntime` category. They include only an
+allowlisted bundle-source label and bounded line/column numbers. Markdown, arbitrary
+JavaScript exception messages, account data, and file paths are excluded. These
+diagnostics identify failures; they do not suppress or recover from them.
+
+Startup restores the cached account and selected note before attempting network
+refresh. Keychain reads and writes run away from the UI thread, and prepared API
+clients are reused per account. Reauthentication and account removal invalidate
+those clients. Restoring a rich-text note leaves server sync paused and does not
+wait for credentials.
+
+Preview prepares its authenticated client in the background so image and link
+resolution resumes when credentials become available. Concurrent preview and sync
+requests share one in-flight client preparation rather than repeating Keychain
+lookups. Failed preparation is cleared so a later action can retry.
+
+### Measuring warm Text handoffs
+
+On macOS, run `make benchmark-text` (or `TEXT_BENCHMARK_ROUNDS=20 make benchmark-text`).
+It generates assets if needed, compiles a small WebKit harness, and alternates two
+different synthetic notes within each workload: roughly 1 KiB and 10 KiB of mixed
+Markdown, 100 KiB of prose, and 100 KiB with many tables and tasks. The first switch
+within each workload is discarded, followed by 10 measured switches by default.
+No server, accounts, credentials, or user notes are accessed.
+
+The table reports median/p95 native finish/start time until the `loaded` callback,
+plus the finish round trip and JavaScript document-reset time. The JSON report at
+`.build/embedded-text/benchmark-results.json` records sample counts, fixture sizes,
+the operating-system version, and the pinned Text revision. Results are generated
+locally and ignored by Git.
+
+This isolates editor/bridge work. It excludes SwiftUI navigation, draft persistence,
+pending edits, network requests, and painting; it is not a measurement of visible
+page-switch latency. Mixed fixtures deliberately stress table/task node views, so
+compare prose and structured workloads separately. Compare runs on the same machine
+and do not treat these timings as CI pass/fail thresholds.
+
+### Rich-text integration with storage and sync
+
+Original Markdown backups are stored in the incremental account metadata, including
+when migrating legacy snapshots. They survive document-only saves, cold reopening,
+and sync checkpoints that began before a backup was created. Existing metadata
+without backups remains readable.
+
+Rich Text and native server sync have exclusive lifetimes. Finish or cancel an
+active sync before entering Rich Text. If a page's preferred mode is Rich Text
+while sync is running, that page opens in View; Markdown source editing remains
+available. Server sync actions are disabled until Rich Text is closed.

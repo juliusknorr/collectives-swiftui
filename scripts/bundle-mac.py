@@ -8,6 +8,7 @@ from pathlib import Path
 import plistlib
 import shutil
 import subprocess
+import sys
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("executable", type=Path)
@@ -17,6 +18,8 @@ contents = args.output.resolve() / "Contents"
 macos = contents / "MacOS"
 notices = Path(__file__).resolve().parents[1] / "ThirdParty"
 icon = Path(__file__).resolve().parents[1] / "Resources" / "AppIcon.icns"
+embedded_text = Path(__file__).resolve().parents[1] / "Resources" / "EmbeddedText"
+subprocess.run([sys.executable, str(Path(__file__).with_name("build-embedded-text.py"))], check=True)
 signing_directory = Path(__file__).resolve().parents[1] / ".local-signing"
 identity = os.environ.get("COLLECTIVES_SIGNING_IDENTITY")
 keychain = os.environ.get("COLLECTIVES_SIGNING_KEYCHAIN")
@@ -29,7 +32,7 @@ if local_signing:
 identity = identity or "-"
 fingerprint = hashlib.sha256()
 fingerprint.update(json.dumps([identity, keychain]).encode())
-for source in [Path(__file__), args.executable, icon] + sorted(path for path in notices.rglob("*") if path.is_file()):
+for source in [Path(__file__), args.executable, icon] + sorted(path for path in notices.rglob("*") if path.is_file()) + sorted(path for path in embedded_text.rglob("*") if path.is_file()):
     fingerprint.update(str(source.resolve()).encode())
     fingerprint.update(b"\0")
     fingerprint.update(source.read_bytes())
@@ -59,6 +62,7 @@ with (contents / "Info.plist").open("wb") as file:
     }, file)
 (contents / "Resources").mkdir(parents=True, exist_ok=True)
 shutil.copy2(icon, contents / "Resources" / "AppIcon.icns")
+shutil.copytree(embedded_text, contents / "Resources" / "EmbeddedText", dirs_exist_ok=True)
 if notices.is_dir():
     def copy_notice(source, destination):
         target = Path(destination)

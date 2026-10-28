@@ -47,9 +47,11 @@ public actor LocalStore {
     private struct Metadata: Codable, Equatable {
         var collectives: [Collective]
         var pages: [String: [Page]]
+        var textSourceBackups: [String: String]?
         init(_ snapshot: AccountSnapshot) {
             collectives = snapshot.collectives
             pages = snapshot.pages
+            textSourceBackups = snapshot.textSourceBackups
         }
     }
     private struct Manifest: Codable {
@@ -92,6 +94,7 @@ public actor LocalStore {
             var snapshot = AccountSnapshot()
             snapshot.collectives = metadata.collectives
             snapshot.pages = metadata.pages
+            snapshot.textSourceBackups = metadata.textSourceBackups
             for (key, file) in manifest.documentFiles {
                 let document = try read(CachedDocument.self, at: assetURL(file, folder: "documents", accountID: accountID))
                 guard key == String(document.page.id) else { throw LocalStorageError.invalidDocument }

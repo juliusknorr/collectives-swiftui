@@ -99,7 +99,8 @@ private final class ConcurrentSyncFixture {
         }
         let transport = SuspendedDocumentTransport()
         self.transport = transport
-        model = AppModel(store: store, preferences: LibraryPreferences(defaults: defaults)) { account in
+        model = AppModel(store: store, preferences: LibraryPreferences(defaults: defaults),
+                         modePreferences: PageModePreferences(defaults: defaults)) { account in
             CollectivesClient(account: account, credential: Credential(loginName: account.userID, appPassword: "test"),
                 transport: transport)
         }
@@ -663,4 +664,30 @@ func cancellingPageSyncIgnoresLateResponseAndPreservesExistingIssue(status: Int)
     #expect(fixture.model.message == failureMessage)
     #expect(fixture.model.text == "unsaved editor text")
     #expect(fixture.model.document?.draft == "unsaved editor text")
+}
+
+@MainActor
+@Test func richTextWaitsForActiveSyncAndBlocksNewSyncUntilItCloses() async throws {
+    let fixture = try await ConcurrentSyncFixture()
+    defer { fixture.cleanup() }
+    let sync = Task { await fixture.model.sync() }
+    await fixture.transport.waitForDocumentRequest()
+    await fixture.model.changePageMode(.richText)
+    #expect(fixture.model.pageMode != .richText)
+    #expect(fixture.model.textSession == nil)
+    fixture.defaults.set(PageViewMode.richText.rawValue, forKey: "defaultPageMode")
+    await fixture.model.openPage(fixture.pages[1])
+    #expect(fixture.model.pageMode == .view)
+    #expect(fixture.model.textSession == nil)
+    await fixture.transport.respond()
+    await sync.value
+    await fixture.model.changePageMode(.richText)
+    #expect(fixture.model.textSession?.pageID == fixture.pages[1].id)
+    let count = await fixture.transport.documentRequestHosts.count
+    await fixture.model.sync()
+    await fixture.model.syncPending()
+    #expect(await fixture.model.syncAccounts() == false)
+    #expect(await fixture.transport.documentRequestHosts.count == count)
+    let reopened = try await LocalStore(root: fixture.root).snapshot(accountID: fixture.accounts[0].id)
+    #expect(reopened.textSourceBackups?[String(fixture.pages[1].id)] == "first page 71")
 }

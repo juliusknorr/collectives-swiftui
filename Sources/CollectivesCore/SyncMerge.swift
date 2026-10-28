@@ -5,6 +5,8 @@ public extension AccountSnapshot {
     /// Use the initial snapshot for the first baseline, then the previous unmerged checkpoint.
     func mergingSync(_ remote: AccountSnapshot, startedFrom base: AccountSnapshot) -> AccountSnapshot {
         var merged = remote
+        let backups = (remote.textSourceBackups ?? [:]).merging(textSourceBackups ?? [:]) { _, local in local }
+        merged.textSourceBackups = backups.isEmpty ? nil : backups
         merged.collectives = mergeSyncItems(remote.collectives, local: collectives, base: base.collectives)
         for key in Set(remote.pages.keys).union(pages.keys).union(base.pages.keys) {
             let items = mergeSyncItems(remote.pages[key] ?? [], local: pages[key] ?? [], base: base.pages[key] ?? [])
