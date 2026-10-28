@@ -34,3 +34,36 @@ import Testing
     let snapshot = try JSONDecoder().decode(AccountSnapshot.self, from: old)
     #expect(snapshot.textSourceBackups == nil)
 }
+
+@Test func textBackupsSurviveReopeningLocalStoreAfterDocumentChanges() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let accountID = UUID()
+    let page = Page(id: 42, title: "Source backup", fileName: "source.md", filePath: "source.md", collectivePath: nil)
+    let source = "# Original 📝\n\n<!-- preserve exact source -->\n\n日本語\n"
+    var snapshot = AccountSnapshot()
+    snapshot.documents["42"] = CachedDocument(page: page, collectiveID: 7, markdown: source, etag: "base")
+    snapshot.rememberTextSource(pageID: page.id, markdown: source)
+    let store = LocalStore(root: root)
+    try await store.saveSnapshot(snapshot, accountID: accountID)
+    snapshot.documents["42"]?.draft = "# Rich-text edit\n"
+    try await store.saveSnapshot(snapshot, accountID: accountID)
+    let reopened = try await LocalStore(root: root).snapshot(accountID: accountID)
+    #expect(reopened.textSourceBackups?["42"] == source)
+    #expect(reopened.documents["42"]?.draft == "# Rich-text edit\n")
+}
+
+@Test func legacyTextBackupsSurviveStorageMigrationAndReopening() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let accountID = UUID()
+    let source = "# Legacy source\n\n<!-- exact original -->\n"
+    var snapshot = AccountSnapshot()
+    snapshot.rememberTextSource(pageID: 42, markdown: source)
+    try JSONEncoder().encode(snapshot).write(to: root.appendingPathComponent(accountID.uuidString + ".json"))
+    let migrated = try await LocalStore(root: root).snapshot(accountID: accountID)
+    #expect(migrated.textSourceBackups?["42"] == source)
+    let reopened = try await LocalStore(root: root).snapshot(accountID: accountID)
+    #expect(reopened.textSourceBackups?["42"] == source)
+}
