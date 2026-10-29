@@ -169,7 +169,9 @@ python3 -m unittest discover -s scripts/tests -v
 make text-assets
 node scripts/test-embedded-text.cjs
 node scripts/test-text-startup-diagnostics.cjs
+node scripts/test-text-resize-observer.cjs
 xcrun swift scripts/test-embedded-text-webkit.swift Resources/EmbeddedText
+xcrun swift scripts/test-embedded-text-webkit.swift Resources/EmbeddedText 390
 # On incomplete preview CLT, add -sdk /path/to/compatible/MacOSX.sdk to xcrun swift.
 ```
 

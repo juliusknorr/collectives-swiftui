@@ -20,9 +20,14 @@ jobs:
       - run: python3 -m unittest discover -s scripts/tests -v
       - run: node scripts/test-embedded-text.cjs
       - run: node scripts/test-text-startup-diagnostics.cjs
+      - run: node scripts/test-text-resize-observer.cjs
       - name: Type-check Text handoff benchmark
         run: xcrun swiftc -typecheck scripts/benchmark-embedded-text.swift
       - run: make text-assets
+      - name: Verify rich text at phone and desktop widths
+        run: |
+          xcrun swift scripts/test-embedded-text-webkit.swift Resources/EmbeddedText 390
+          xcrun swift scripts/test-embedded-text-webkit.swift Resources/EmbeddedText 900
       - run: swift test
       - name: Build native Mac app
         run: xcodebuild -project Collectives.xcodeproj -scheme Collectives -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO build

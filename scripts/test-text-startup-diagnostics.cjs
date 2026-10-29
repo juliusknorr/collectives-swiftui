@@ -17,11 +17,18 @@ window.reportTextError({ name: 'TypeError', message: privateContent }, 'warming'
 assert.equal(messages.at(-1).phase, 'warming');
 assert.equal(messages.at(-1).code, 'TypeError');
 assert.equal(messages.at(-1).source, 'unknown');
+status.textContent = '';
+for (const message of ['ResizeObserver loop completed with undelivered notifications.',
+    'ResizeObserver loop limit exceeded']) {
+    listeners.get('error')({ message });
+}
+assert.equal(messages.length, 1, 'Deferred resize notifications must not disable the editor');
+assert.equal(status.textContent, '', 'Deferred resize notifications must not show a load failure');
 listeners.get('error')({
-    message: 'ResizeObserver loop completed with undelivered notifications.',
+    error: { name: 'TypeError', message: privateContent },
     filename: 'file:///private/user/path/EmbeddedText/vendor/text.js', lineno: 12, colno: 34,
 });
-assert.equal(messages.at(-1).code, 'ResizeObserverLoop');
+assert.equal(messages.at(-1).code, 'TypeError');
 assert.equal(messages.at(-1).source, 'vendor');
 assert.equal(messages.at(-1).line, 12);
 assert.equal(messages.at(-1).column, 34);

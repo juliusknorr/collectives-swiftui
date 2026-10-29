@@ -1,3 +1,41 @@
+// Resize callbacks can resize the responsive toolbar again. Run them in the next
+// frame to avoid WebKit's resize-loop error, which file origins may redact to
+// "Script error." and incorrectly present as a fatal editor failure.
+if (typeof window.ResizeObserver === 'function') {
+    const NativeResizeObserver = window.ResizeObserver;
+    window.ResizeObserver = class extends NativeResizeObserver {
+        #pending = new Map();
+        #frame = null;
+        constructor(callback) {
+            if (typeof callback !== 'function') throw new TypeError('ResizeObserver callback must be a function');
+            super((entries, observer) => {
+                for (const entry of entries) this.#pending.set(entry.target, entry);
+                if (this.#frame !== null) return;
+                this.#frame = window.requestAnimationFrame(() => {
+                    this.#frame = null;
+                    const pending = [...this.#pending.values()];
+                    this.#pending.clear();
+                    if (pending.length) callback(pending, observer);
+                });
+            });
+        }
+        disconnect() {
+            super.disconnect();
+            this.#pending.clear();
+            this.#cancelFrame();
+        }
+        unobserve(target) {
+            super.unobserve(target);
+            this.#pending.delete(target);
+            if (!this.#pending.size) this.#cancelFrame();
+        }
+        #cancelFrame() {
+            if (this.#frame !== null) window.cancelAnimationFrame(this.#frame);
+            this.#frame = null;
+        }
+    };
+}
+
 // Local Nextcloud host shim. No account details or credentials enter this runtime.
 window.OC = {
     config: { modRewriteWorking: true },
@@ -17,11 +55,13 @@ window._oc_isadmin = false;
 window.reportTextError = (failure, phase = 'runtime') => {
     const error = failure?.error ?? failure?.reason ?? failure;
     const message = failure?.message ?? error?.message;
+    // WebKit defers undelivered resize notifications to the next frame. The
+    // editor remains usable, so this layout notification must not end a session.
+    if (message === 'ResizeObserver loop completed with undelivered notifications.'
+        || message === 'ResizeObserver loop limit exceeded') return;
     const names = ['TypeError', 'ReferenceError', 'SyntaxError', 'RangeError', 'URIError',
         'EvalError', 'AbortError', 'NotFoundError', 'InvalidStateError', 'SecurityError'];
-    const code = message === 'ResizeObserver loop completed with undelivered notifications.'
-        || message === 'ResizeObserver loop limit exceeded'
-        ? 'ResizeObserverLoop' : names.includes(error?.name) ? error.name : 'Unknown';
+    const code = names.includes(error?.name) ? error.name : 'Unknown';
     const location = typeof error?.stack === 'string'
         ? /(?:vendor\/text\.js|editor\.js|bootstrap\.js):(\d+):(\d+)/.exec(error.stack) : null;
     const filename = failure?.filename ?? error?.fileName
