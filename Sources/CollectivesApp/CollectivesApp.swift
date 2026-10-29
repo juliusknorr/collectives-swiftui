@@ -1205,6 +1205,7 @@ struct ContentView: View {
     @State private var showSyncIssue = false
     @State private var newPageRequest: NewPageRequest?
     @State private var renamePageRequest: RenamePageRequest?
+    @State private var pageOrganizationRequest: PageOrganizationRequest?
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var homeColumnVisibility: NavigationSplitViewVisibility = .all
     @State private var showingOutline = false
@@ -1272,6 +1273,7 @@ struct ContentView: View {
             }
         }
         .sheet(item: $renamePageRequest) { request in RenamePageSheet(model: model, request: request) }
+        .sheet(item: $pageOrganizationRequest) { request in PageOrganizationSheet(model: model, request: request) }
         .sheet(item: $conflictReview) { review in
             ConflictReviewSheet(model: model, review: review)
         }
@@ -1345,6 +1347,14 @@ struct ContentView: View {
                 Button("Rename Page…", systemImage: "pencil") {
                     if let page = model.selectedPage { beginRename(page) }
                 }.disabled(!model.canEdit || model.selectedPage == nil || model.selectedPage?.parentId == 0)
+                Button("Move Page…", systemImage: "folder") {
+                    if let page = model.selectedPage { beginPageOrganization(.move(page)) }
+                }.disabled(!model.canEdit || model.selectedPage == nil || model.selectedPage?.parentId == 0)
+                Button("Move Page to Trash…", systemImage: "trash", role: .destructive) {
+                    if let page = model.selectedPage { beginPageOrganization(.trash(page)) }
+                }.disabled(!model.canEdit || model.selectedPage == nil || model.selectedPage?.parentId == 0)
+                Button("Deleted Pages…", systemImage: "arrow.uturn.backward") { beginPageOrganization(.restore) }
+                    .disabled(!model.canEdit)
                 Button("Download for Offline Editing", systemImage: "arrow.down.circle") { Task { await model.downloadCollective() } }
                 Button("Refresh Pages", systemImage: "arrow.clockwise") {
                     if let id = model.selectedCollective { Task { await model.openCollective(id) } }
@@ -1491,6 +1501,11 @@ struct ContentView: View {
               let accountID = model.activeID, let collectiveID = model.selectedCollective else { return }
         renamePageRequest = RenamePageRequest(accountID: accountID, collectiveID: collectiveID, page: page)
     }
+    private func beginPageOrganization(_ action: PageOrganizationRequest.Action) {
+        guard !model.busy, !model.syncing, model.canEdit,
+              let accountID = model.activeID, let collectiveID = model.selectedCollective else { return }
+        pageOrganizationRequest = PageOrganizationRequest(accountID: accountID, collectiveID: collectiveID, action: action)
+    }
     private var pageIdentity: String { "\(model.activeID?.uuidString ?? "")/\(model.selectedPage?.id.description ?? "")" }
     private func append(_ snippet: String) { model.edited(model.text + snippet) }
     private var collectiveTitle: String {
@@ -1573,6 +1588,10 @@ struct ContentView: View {
             Button(model.library.favoritePageIDs.contains(page.id) ? "Remove from Favorites" : "Add to Favorites", systemImage: "star") { model.toggleFavorite(page.id) }
             Button("Open Page", systemImage: "doc.text") { Task { await model.openPage(page) } }
             Button("Rename…", systemImage: "pencil") { beginRename(page) }
+                .disabled(model.busy || model.syncing || !model.canEdit || page.parentId == 0)
+            Button("Move…", systemImage: "folder") { beginPageOrganization(.move(page)) }
+                .disabled(model.busy || model.syncing || !model.canEdit || page.parentId == 0)
+            Button("Move to Trash…", systemImage: "trash", role: .destructive) { beginPageOrganization(.trash(page)) }
                 .disabled(model.busy || model.syncing || !model.canEdit || page.parentId == 0)
             Button("New Subpage…", systemImage: "doc.badge.plus") { beginNewPage(parent: page) }
                 .disabled(model.busy || model.syncing || !model.canEdit)

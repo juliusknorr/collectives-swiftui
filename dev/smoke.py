@@ -79,6 +79,7 @@ def main():
         "title": "Sync smoke " + uuid4().hex[:12],
     })["page"]
     child = None
+    destination = None
     try:
         child = alice.ocs("POST", f"{endpoint}/{page['id']}", {
             "title": "Nested smoke 🌱 " + uuid4().hex[:8],
@@ -125,19 +126,70 @@ def main():
         require(headers["ETag"] != stale_etag, "Successful save did not change the ETag.")
         require(folder_etag(alice, path) == headers["ETag"],
                 "Folder metadata did not detect the changed content.")
+
+        destination = alice.ocs("POST", f"{endpoint}/{landing['id']}", {
+            "title": "Move destination " + uuid4().hex[:12],
+        })["page"]
+        old_child_path = dav_path("alice", child)
+        moved = alice.ocs("PUT", f"{endpoint}/{page['id']}", {"parentId": destination["id"]})["page"]
+        require(moved["id"] == page["id"] and moved["parentId"] == destination["id"],
+                "Moving changed the page identity or returned the wrong parent.")
+        refreshed = alice.ocs("GET", endpoint)["pages"]
+        page = next(p for p in refreshed if p["id"] == page["id"])
+        child = next(p for p in refreshed if p["id"] == child["id"])
+        destination = next(p for p in refreshed if p["id"] == destination["id"])
+        require(destination["fileName"] == "Readme.md", "Moving into a leaf did not update its path.")
+        require(dav_path("alice", child) != old_child_path, "Moving did not update descendant paths.")
+        require(alice.request("GET", dav_path("alice", page))[0] == expected,
+                "Moving changed the page Markdown.")
+        require(alice.request("GET", dav_path("alice", child))[0] == child_body,
+                "Moving changed descendant Markdown.")
+        for method, suffix, payload in [("PUT", str(page["id"]), {"parentId": landing["id"]}),
+                                         ("DELETE", str(page["id"]), None)]:
+            try:
+                bob.ocs(method, f"{endpoint}/{suffix}", payload)
+            except HTTPError as error:
+                require(error.code in {403, 404}, "Unexpected structural permission response.")
+            else:
+                raise RuntimeError("Bob could change Alice's private pages.")
+        alice.ocs("DELETE", f"{endpoint}/{page['id']}")
+        active_ids = {p["id"] for p in alice.ocs("GET", endpoint)["pages"]}
+        require(page["id"] not in active_ids and child["id"] not in active_ids,
+                "Trashing a parent left its subtree active.")
+        require(page["id"] in {p["id"] for p in alice.ocs("GET", endpoint + "/trash")["pages"]},
+                "Trashed page was not listed for restore.")
+        try:
+            bob.ocs("PATCH", f"{endpoint}/trash/{page['id']}")
+        except HTTPError as error:
+            require(error.code in {403, 404}, "Unexpected restore permission response.")
+        else:
+            raise RuntimeError("Bob could restore Alice's private page.")
+        restored = alice.ocs("PATCH", f"{endpoint}/trash/{page['id']}")["page"]
+        require(restored["id"] == page["id"], "Restoring changed the page identity.")
+        refreshed = alice.ocs("GET", endpoint)["pages"]
+        page = next(p for p in refreshed if p["id"] == page["id"])
+        child = next(p for p in refreshed if p["id"] == child["id"])
+        require(alice.request("GET", dav_path("alice", page))[0] == expected,
+                "Restore changed the parent Markdown.")
+        require(alice.request("GET", dav_path("alice", child))[0] == child_body,
+                "Restore lost or changed descendant Markdown.")
     finally:
         try:
             if child is not None:
                 alice.ocs("DELETE", f"{endpoint}/{child['id']}")
         finally:
-            alice.ocs("DELETE", f"{endpoint}/{page['id']}")
+            try:
+                alice.ocs("DELETE", f"{endpoint}/{page['id']}")
+            finally:
+                if destination is not None:
+                    alice.ocs("DELETE", f"{endpoint}/{destination['id']}")
 
     # This checks initiation only; browser approval and token polling are manual.
     body, _ = alice.request("POST", "/index.php/login/v2")
     flow = json.loads(body)
     require(bool(flow.get("login")) and bool(flow.get("poll", {}).get("token"))
             and bool(flow.get("poll", {}).get("endpoint")), "Login Flow v2 initiation failed.")
-    print("Real-server smoke checks passed: accounts, nested creation and rename, repeat seed, DAV, folder ETags, Login Flow v2 initiation.")
+    print("Real-server smoke checks passed: accounts, nested creation/rename/move/trash/restore, permissions, repeat seed, DAV, folder ETags, Login Flow v2 initiation.")
 
 
 if __name__ == "__main__":

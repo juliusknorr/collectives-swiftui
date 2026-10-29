@@ -234,3 +234,18 @@ Rich Text and native server sync have exclusive lifetimes. Finish or cancel an
 active sync before entering Rich Text. If a page's preferred mode is Rich Text
 while sync is running, that page opens in View; Markdown source editing remains
 available. Server sync actions are disabled until Rich Text is closed.
+
+## Page organization and Mac windows
+
+Online move, trash, and restore use the Collectives OCS API and reconcile page
+metadata without replacing draft content or base revisions. Trash rejects a
+subtree with local changes. Ambiguous writes are checked against server state
+once, without repeating the write. Structural changes hold the shared operation
+lock and require other editors in the collective to switch to View first.
+
+Each Mac window has its own AppModel navigation and editor presentation. AppSession
+shares account snapshots, persistence queue, clients, sync/cancellation state, and
+favorites/recents. A page has one source or rich editor owner at a time. Source
+callbacks carry account, page, and editor-generation identity so delayed callbacks
+cannot edit another document or a reopened editor. Any active rich editor blocks
+native sync. One LocalStore actor remains shared by all windows.
