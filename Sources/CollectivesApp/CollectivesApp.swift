@@ -30,33 +30,16 @@ private struct AutomaticSyncIdentity: Equatable {
 @main
 struct CollectivesApp: App {
     @State private var model = AppModel()
-    @Environment(\.scenePhase) private var scenePhase
-    @AppStorage("automaticSync") private var automaticSync = true
     var body: some Scene {
         WindowGroup {
-            ContentView(model: model)
-                .task { await model.start() }
-                .task(id: AutomaticSyncIdentity(
-                    active: scenePhase == .active && automaticSync && model.startupComplete,
-                    accountID: model.activeID,
-                    collectiveIDs: model.snapshot.collectives.map(\.id)
-                )) {
-                    guard scenePhase == .active, automaticSync, model.startupComplete else { return }
-                    await model.runAutomaticSync()
-                }
+            CollectivesWindow(sharedModel: model)
         }
         #if os(macOS)
         .defaultSize(width: 1100, height: 750)
         .windowToolbarStyle(.unifiedCompact)
         .commands {
             PageNavigationCommands()
-            CommandGroup(after: .newItem) {
-                Button("Sync Current Page") { Task { await model.sync() } }
-                    .keyboardShortcut("s").disabled(model.busy || model.syncing || model.pageMode == .richText || model.selectedPage == nil)
-                Button("Sync All Accounts") { Task { await model.syncAccounts() } }
-                    .keyboardShortcut("s", modifiers: [.command, .shift]).disabled(model.busy || model.syncing || model.pageMode == .richText)
-                Toggle("Automatically Sync Active Account", isOn: $automaticSync)
-            }
+            WindowSyncCommands()
         }
         #endif
         #if os(macOS)
@@ -65,26 +48,99 @@ struct CollectivesApp: App {
     }
 }
 
+private struct CollectivesWindow: View {
+    let sharedModel: AppModel
+    @State private var windowModel: AppModel?
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("automaticSync") private var automaticSync = true
+    var body: some View {
+        Group {
+            if let model = windowModel {
+                ContentView(model: model)
+                    #if os(macOS)
+                    .focusedSceneValue(\.collectivesWindow, model)
+                    #endif
+                    .task { await model.start() }
+                    .task(id: AutomaticSyncIdentity(
+                        active: scenePhase == .active && automaticSync && model.startupComplete,
+                        accountID: model.activeID,
+                        collectiveIDs: model.snapshot.collectives.map(\.id)
+                    )) {
+                        guard scenePhase == .active, automaticSync, model.startupComplete else { return }
+                        await model.runAutomaticSync()
+                    }
+                    .onDisappear { Task { await model.finishTextEditing() } }
+            } else {
+                ProgressView().task { windowModel = sharedModel.newWindow() }
+            }
+        }
+    }
+}
+
 @MainActor @Observable
 final class AppModel {
-    var accounts: [Account] = []
-    var accountCollectives: [UUID: [Collective]] = [:]
-    var collectiveListingErrors: [UUID: String] = [:]
-    var activeID: UUID?
-    var snapshot = AccountSnapshot()
+    var accounts: [Account] {
+        get { session.accounts }
+        set { session.accounts = newValue }
+    }
+    var accountCollectives: [UUID: [Collective]] {
+        get { session.accountCollectives }
+        set { session.accountCollectives = newValue }
+    }
+    var collectiveListingErrors: [UUID: String] {
+        get { session.collectiveListingErrors }
+        set { session.collectiveListingErrors = newValue }
+    }
+    private(set) var sourceEditorGeneration = UUID()
+    var activeID: UUID? {
+        didSet { if activeID != oldValue { sourceEditorGeneration = UUID() } }
+    }
+    let windowID = UUID()
+    let session: AppSession
+    private var emptySnapshot = AccountSnapshot()
+    var snapshot: AccountSnapshot {
+        get { activeID.flatMap { session.snapshots[$0] } ?? emptySnapshot }
+        set {
+            guard let id = activeID else { emptySnapshot = newValue; return }
+            session.snapshots[id] = newValue
+            session.refreshWindows(accountID: id, except: windowID)
+        }
+    }
     var selectedCollective: Int?
-    var selectedPage: Page?
+    var selectedPage: Page? {
+        didSet { if selectedPage?.id != oldValue?.id { sourceEditorGeneration = UUID() } }
+    }
     var text = ""
     var message = ""
-    var busy = false
-    var syncing = false
-    private(set) var isCancellingSync = false
-    private(set) var automaticSyncPaused = false
+    var busy: Bool {
+        get { session.busy }
+        set { session.busy = newValue }
+    }
+    var syncing: Bool {
+        get { session.syncing }
+        set { session.syncing = newValue }
+    }
+    var isCancellingSync: Bool {
+        get { session.isCancellingSync }
+        set { session.isCancellingSync = newValue }
+    }
+    var automaticSyncPaused: Bool {
+        get { session.automaticSyncPaused }
+        set { session.automaticSyncPaused = newValue }
+    }
     var canCancelSync: Bool { (syncing || syncActivity != nil) && !isCancellingSync }
-    var syncActivity: SyncActivity?
-    var syncIssues: [UUID: SyncIssue] = [:]
+    var syncActivity: SyncActivity? {
+        get { session.syncActivity }
+        set { session.syncActivity = newValue }
+    }
+    var syncIssues: [UUID: SyncIssue] {
+        get { session.syncIssues }
+        set { session.syncIssues = newValue }
+    }
     var textSession: EmbeddedTextSession?
-    var pageMode: PageViewMode = .view
+    var pageMode: PageViewMode = .view {
+        didSet { if pageMode != oldValue { sourceEditorGeneration = UUID() } }
+    }
     let textRuntime = OfflineTextRuntime()
     private let modePreferences: PageModePreferences
     var showLogin = false
@@ -92,37 +148,80 @@ final class AppModel {
     var loginServer = "https://"
     var started = false
     var startupComplete = false
-    var library = PageLibraryState()
+    private var emptyLibrary = PageLibraryState()
+    var library: PageLibraryState {
+        get { activeID.flatMap { session.libraries[$0] } ?? emptyLibrary }
+        set {
+            if let id = activeID { session.libraries[id] = newValue }
+            else { emptyLibrary = newValue }
+        }
+    }
     private let preferences: LibraryPreferences
-    private let store: LocalStore
+    let store: LocalStore
     private let credentials = KeychainCredentialStore()
     private let makeClient: @MainActor (Account) async throws -> CollectivesClient
-    private struct ClientPreparation {
-        let id = UUID()
-        let task: Task<CollectivesClient, Error>
+    var cachedClients: [Account: CollectivesClient] {
+        get { session.cachedClients }
+        set { session.cachedClients = newValue }
     }
-    private var cachedClients: [Account: CollectivesClient] = [:]
-    private var preparingClients: [Account: ClientPreparation] = [:]
-    private var clientGeneration = UUID()
-    private var accountSyncTasks: [UUID: Task<Void, Error>] = [:]
-    private var removingAccountIDs: Set<UUID> = []
+    var preparingClients: [Account: ClientPreparation] {
+        get { session.preparingClients }
+        set { session.preparingClients = newValue }
+    }
+    var clientGeneration: UUID {
+        get { session.clientGeneration }
+        set { session.clientGeneration = newValue }
+    }
+    var accountSyncTasks: [UUID: Task<Void, Error>] {
+        get { session.accountSyncTasks }
+        set { session.accountSyncTasks = newValue }
+    }
+    var removingAccountIDs: Set<UUID> {
+        get { session.removingAccountIDs }
+        set { session.removingAccountIDs = newValue }
+    }
     private var pushConnected = false
     private var remoteSyncRequested = false
     private var automaticSyncGeneration: UUID?
-    private var pendingPersistence: Task<Void, Never>?
-    private var persistenceFailed = false
-    var savingDraft = false
+    var pendingPersistence: Task<Void, Never>? {
+        get { session.pendingPersistence }
+        set { session.pendingPersistence = newValue }
+    }
+    var persistenceFailed: Bool {
+        get { session.persistenceFailed }
+        set { session.persistenceFailed = newValue }
+    }
+    var savingDraft: Bool {
+        get { session.savingDraft }
+        set { session.savingDraft = newValue }
+    }
     var draftSaveFailed: Bool { persistenceFailed }
-    private var editGeneration = UUID()
-    private var syncBaselines: [UUID: AccountSnapshot] = [:]
-    private var checkpointSnapshots: [UUID: AccountSnapshot] = [:]
-    private var checkpointVersions: [UUID: Int] = [:]
-    private var lastEdit = Date.distantPast
+    var editGeneration: UUID {
+        get { session.editGeneration }
+        set { session.editGeneration = newValue }
+    }
+    var syncBaselines: [UUID: AccountSnapshot] {
+        get { session.syncBaselines }
+        set { session.syncBaselines = newValue }
+    }
+    var checkpointSnapshots: [UUID: AccountSnapshot] {
+        get { session.checkpointSnapshots }
+        set { session.checkpointSnapshots = newValue }
+    }
+    var checkpointVersions: [UUID: Int] {
+        get { session.checkpointVersions }
+        set { session.checkpointVersions = newValue }
+    }
+    var lastEdit: Date {
+        get { session.lastEdit }
+        set { session.lastEdit = newValue }
+    }
 
-    init(store: LocalStore? = nil, preferences: LibraryPreferences = LibraryPreferences(),
+    init(store: LocalStore? = nil, session: AppSession = AppSession(), preferences: LibraryPreferences = LibraryPreferences(),
          modePreferences: PageModePreferences = PageModePreferences(),
          makeClient: (@MainActor (Account) async throws -> CollectivesClient)? = nil) {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        self.session = session
         self.store = store ?? LocalStore(root: base.appendingPathComponent("Collectives", isDirectory: true))
         self.preferences = preferences
         self.modePreferences = modePreferences
@@ -134,7 +233,37 @@ final class AppModel {
             }
             return CollectivesClient(account: account, credential: credential)
         }
+        session.windows.append(WeakAppWindow(self))
         textRuntime.warm()
+    }
+    func newWindow() -> AppModel {
+        AppModel(store: store, session: session, preferences: preferences,
+                 modePreferences: modePreferences, makeClient: makeClient)
+    }
+    var richTextInAnotherWindow: Bool {
+        session.windows.contains { $0.value?.windowID != windowID && $0.value?.textSession != nil }
+    }
+    var editingInAnotherWindow: Bool {
+        guard let accountID = activeID, let pageID = selectedPage?.id else { return false }
+        return session.editorOwner(accountID: accountID, pageID: pageID).map { $0 != windowID } ?? false
+    }
+    private func claimEditor() -> Bool {
+        guard let accountID = activeID, let pageID = selectedPage?.id else { return false }
+        guard !editingInAnotherWindow else {
+            message = "This page is being edited in another window. Switch that window to View to edit here."
+            return false
+        }
+        session.editorOwners[AppSession.DocumentKey(accountID: accountID, pageID: pageID)] = windowID
+        return true
+    }
+    private func releaseEditor() {
+        session.editorOwners = session.editorOwners.filter { $0.value != windowID }
+    }
+    func refreshSharedSelection() {
+        reconcileSelection()
+        if activeID.map({ id in !accounts.contains(where: { $0.id == id }) }) == true {
+            activeID = nil; selectedCollective = nil; selectedPage = nil; text = ""
+        }
     }
     var account: Account? { accounts.first { $0.id == activeID } }
     var pages: [Page] { snapshot.pages[String(selectedCollective ?? -1)] ?? [] }
@@ -169,15 +298,22 @@ final class AppModel {
         guard !started else { return }; started = true
         defer { startupComplete = true }
         do {
-            accounts = try await store.accounts()
+            if !session.accountsLoaded {
+                accounts = try await store.accounts()
+                session.accountsLoaded = true
+            }
             for account in accounts {
-                do { accountCollectives[account.id] = try await store.snapshot(accountID: account.id).collectives }
+                do { accountCollectives[account.id] = try await snapshotForAccount(account.id).collectives }
                 catch { collectiveListingErrors[account.id] = error.localizedDescription }
             }
             if let target = accounts.first(where: { $0.id == preferences.lastAccountID }) ?? accounts.first {
+                while busy {
+                    do { try await Task.sleep(for: .milliseconds(25)) }
+                    catch { return }
+                }
                 await selectAccount(target.id, refresh: false)
                 await restoreSelection()
-                if pageMode != .richText { await syncAccounts() }
+                if pageMode != .richText && session.windows.compactMap(\.value).first(where: \.started) === self { await syncAccounts() }
             } else {
                 message = "Add an account to get started."
             }
@@ -188,7 +324,7 @@ final class AppModel {
         guard let client = cachedClients[account] else { throw CollectivesError.invalidResponse }
         return client
     }
-    private func activeClient() async throws -> CollectivesClient {
+    func activeClient() async throws -> CollectivesClient {
         guard let account else { throw CollectivesError.invalidResponse }
         return try await client(for: account)
     }
@@ -232,13 +368,17 @@ final class AppModel {
         let loaded: AccountSnapshot
         do {
             await pendingPersistence?.value
-            let stored = try await store.snapshot(accountID: id)
-            loaded = checkpointVersions[id, default: 0] == version ? stored : checkpointSnapshots[id] ?? stored
+            if let current = session.snapshots[id] {
+                loaded = current
+            } else {
+                let stored = try await store.snapshot(accountID: id)
+                loaded = session.snapshots[id] ?? (checkpointVersions[id, default: 0] == version ? stored : checkpointSnapshots[id] ?? stored)
+            }
         } catch { message = error.localizedDescription; return false }
         activeID = id; selectedCollective = nil; selectedPage = nil; text = ""
         snapshot = loaded
         accountCollectives[id] = loaded.collectives
-        library = preferences.load(accountID: id)
+        library = session.libraries[id] ?? preferences.load(accountID: id)
         preferences.lastAccountID = id
         guard refresh else { return true }
         do {
@@ -256,6 +396,11 @@ final class AppModel {
         }
         return true
     }
+    func snapshotForAccount(_ id: UUID) async throws -> AccountSnapshot {
+        if let cached = session.snapshots[id] { return cached }
+        let stored = try await store.snapshot(accountID: id)
+        return session.snapshots[id] ?? stored
+    }
     func persist() async throws {
         guard let id = activeID else { return }
         try await store.saveSnapshot(snapshot, accountID: id)
@@ -264,6 +409,7 @@ final class AppModel {
         accountID == activeID ? snapshot.collectives : accountCollectives[accountID] ?? []
     }
     func refresh(excludingActive: Bool = false) async {
+        guard !session.hasRichTextEditor else { return }
         let targets = accounts.filter { !excludingActive || $0.id != activeID }
         guard !busy, !syncing, !targets.isEmpty else { return }
         busy = true; defer { busy = false; resumeTextEditing() }
@@ -272,11 +418,12 @@ final class AppModel {
         guard !persistenceFailed else { message = "Save the current draft before refreshing collectives."; return }
         for target in targets {
             do {
-                var local = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
+                var local = try await snapshotForAccount(target.id)
                 let remote = try await client(for: target).collectives()
                 local.replaceCollectives(remote)
                 accountCollectives[target.id] = local.collectives
-                if target.id == activeID { snapshot = local }
+                session.snapshots[target.id] = local
+                session.refreshWindows(accountID: target.id)
                 try await store.saveSnapshot(local, accountID: target.id)
                 collectiveListingErrors[target.id] = nil
             } catch { collectiveListingErrors[target.id] = error.localizedDescription }
@@ -354,6 +501,7 @@ final class AppModel {
         guard let cached = snapshot.documents[key] else { return }
         selectedPage = page
         pageMode = modeForPage(hasConflict: cached.conflict != nil)
+        if pageMode != .view && !claimEditor() { pageMode = .view }
         if let collectiveID = selectedCollective {
             library.visit(pageID: page.id, collectiveID: collectiveID); saveLibrary()
         }
@@ -371,14 +519,20 @@ final class AppModel {
             selectedCollective = doc.collectiveID
             selectedPage = doc.page
             pageMode = modeForPage(hasConflict: doc.conflict != nil)
+            if pageMode != .view && !claimEditor() { pageMode = .view }
             library.visit(pageID: doc.page.id, collectiveID: doc.collectiveID); saveLibrary()
             text = doc.draft ?? doc.markdown
             message = doc.conflict == nil ? "Local draft waiting to sync." : "Conflict: compare your draft with the server version."
         }
         await prepareTextEditing()
     }
+    func edited(_ value: String, accountID: UUID?, pageID: Int, editorGeneration: UUID? = nil) {
+        guard activeID == accountID, selectedPage?.id == pageID, pageMode == .edit,
+              editorGeneration == nil || editorGeneration == sourceEditorGeneration else { return }
+        edited(value)
+    }
     func edited(_ value: String) {
-        guard let page = selectedPage, let doc = snapshot.documents[String(page.id)], canEdit, !busy, textSession == nil else { return }
+        guard let page = selectedPage, let doc = snapshot.documents[String(page.id)], canEdit, !busy, textSession == nil, claimEditor() else { return }
         saveEdited(value, page: page, document: doc)
     }
     private func saveEdited(_ value: String, page: Page, document: CachedDocument) {
@@ -397,17 +551,22 @@ final class AppModel {
             await previous?.value
             do {
                 try await store.saveDocument(saved, accountID: id)
+                if persistenceFailed {
+                    for (accountID, snapshot) in session.snapshots where canSyncAccount(accountID) {
+                        try await store.saveSnapshot(snapshot, accountID: accountID)
+                    }
+                }
                 persistenceFailed = false
                 if editGeneration == generation { savingDraft = false }
                 if activeID == id && editGeneration == generation { message = "Draft saved locally; waiting to sync." }
             } catch { savingDraft = false; persistenceFailed = true; message = "Draft not saved: \(error.localizedDescription)" }
         }
     }
-    private func modeForPage(hasConflict: Bool) -> PageViewMode {
+    func modeForPage(hasConflict: Bool) -> PageViewMode {
         let preferred = modePreferences.modeForPage(canEdit: canEdit, hasConflict: hasConflict)
         return syncing && preferred == .richText ? .view : preferred
     }
-    private func resumeTextEditing() {
+    func resumeTextEditing() {
         guard pageMode == .richText, !busy, !syncing, textSession == nil, document != nil else { return }
         Task { await beginTextEditing() }
     }
@@ -417,9 +576,11 @@ final class AppModel {
             message = "Finish or cancel sync before opening Rich Text."
             return
         }
+        guard mode == .view || claimEditor() else { return }
         busy = true
         await finishTextEditing()
         pageMode = !canEdit ? .view : (mode == .richText && document?.conflict != nil ? .edit : mode)
+        if pageMode != .view && !claimEditor() { pageMode = .view }
         modePreferences.remember(mode)
         await prepareTextEditing()
         busy = false
@@ -429,10 +590,10 @@ final class AppModel {
         busy = true; defer { busy = false }
         await prepareTextEditing()
     }
-    private func prepareTextEditing() async {
+    func prepareTextEditing() async {
         guard pageMode == .richText, !syncing, textSession == nil, canEdit,
               let accountID = activeID, let page = selectedPage,
-              let document, document.conflict == nil else { return }
+              let document, document.conflict == nil, claimEditor() else { return }
         await pendingPersistence?.value
         guard !persistenceFailed else { pageMode = .edit; return }
         do {
@@ -461,6 +622,7 @@ final class AppModel {
         saveEdited(markdown, page: page, document: document)
     }
     func finishTextEditing(retainingContent: Bool = false) async {
+        defer { releaseEditor() }
         await textRuntime.finish(retainingContent: retainingContent)
         guard textSession != nil else { return }
         await pendingPersistence?.value
@@ -477,7 +639,7 @@ final class AppModel {
         edited(original)
     }
     func sync() async {
-        guard !busy, !syncing, pageMode != .richText, let page = selectedPage, let target = account else { return }
+        guard !busy, !syncing, pageMode != .richText, !session.hasRichTextEditor, let page = selectedPage, let target = account else { return }
         automaticSyncPaused = false
         syncing = true; defer { finishSync(); resumeTextEditing() }
         await finishTextEditing()
@@ -515,6 +677,7 @@ final class AppModel {
         if isCancellingSync { await pendingPersistence?.value }
     }
     func downloadCollective() async {
+        guard !session.hasRichTextEditor else { return }
         guard !busy, !syncing, let collectiveID = selectedCollective, let id = activeID else { return }
         automaticSyncPaused = false
         busy = true; defer { busy = false; finishSync(); resumeTextEditing() }
@@ -550,7 +713,7 @@ final class AppModel {
     }
     @discardableResult
     func syncAccounts(automatic: Bool = false) async -> Bool {
-        guard !busy, !syncing, pageMode != .richText, textSession == nil, !showLogin, !settingsLogin else { return false }
+        guard !busy, !syncing, pageMode != .richText, !session.hasRichTextEditor, textSession == nil, !showLogin, !settingsLogin else { return false }
         if automatic && (automaticSyncPaused || Date().timeIntervalSince(lastEdit) < 5) { return false }
         if !automatic { automaticSyncPaused = false }
         syncing = true; defer { finishSync(); resumeTextEditing() }
@@ -566,7 +729,7 @@ final class AppModel {
             }
             do {
                 try await performAccountSync(target.id) { [self] in
-                    let base = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
+                    let base = try await snapshotForAccount(target.id)
                     let result = try await AccountSynchronizer.synchronize(snapshot: base, api: client(for: target), progress: { progress in
                         await self.reportSyncProgress(progress, account: target, targets: targets)
                     }) { value in
@@ -646,7 +809,7 @@ final class AppModel {
         if accountID == activeID { current = snapshot }
         else {
             let stored = try await store.snapshot(accountID: accountID)
-            current = accountID == activeID ? snapshot : stored
+            current = session.snapshots[accountID] ?? stored
         }
         try Task.checkCancellation()
         guard canSyncAccount(accountID) else { throw CancellationError() }
@@ -655,10 +818,9 @@ final class AppModel {
         checkpointVersions[accountID, default: 0] += 1
         checkpointSnapshots[accountID] = merged
         accountCollectives[accountID] = merged.collectives
-        if accountID == activeID {
-            snapshot = merged
-            reconcileSelection()
-        }
+        session.snapshots[accountID] = merged
+        session.refreshWindows(accountID: accountID)
+
         let previous = pendingPersistence
         let save = Task { @MainActor in
             await previous?.value
@@ -675,7 +837,7 @@ final class AppModel {
         }
         try await save.value
     }
-    private func reconcileSelection() {
+    func reconcileSelection() {
         if let selected = selectedPage {
             selectedPage = snapshot.pages.values.joined().first { $0.id == selected.id }
                 ?? snapshot.documents[String(selected.id)]?.page
@@ -778,7 +940,7 @@ final class AppModel {
         }
     }
     func syncPending(automatic: Bool = false) async {
-        guard !busy, !syncing, pageMode != .richText, textSession == nil, !showLogin, !settingsLogin else { return }
+        guard !busy, !syncing, pageMode != .richText, !session.hasRichTextEditor, textSession == nil, !showLogin, !settingsLogin else { return }
         if automatic {
             guard !automaticSyncPaused, Date().timeIntervalSince(lastEdit) >= 5,
                   snapshot.documents.values.contains(where: { $0.draft != nil && $0.conflict == nil }) else { return }
@@ -797,7 +959,7 @@ final class AppModel {
             guard canSyncAccount(target.id) else { continue }
             do {
                 try await performAccountSync(target.id) { [self] in
-                    let base = target.id == activeID ? snapshot : try await store.snapshot(accountID: target.id)
+                    let base = try await snapshotForAccount(target.id)
                     let result = try await AccountSynchronizer.synchronizeDrafts(snapshot: base, api: client(for: target), progress: { progress in
                         await self.reportSyncProgress(progress, account: target, targets: targets)
                     }) { value in
@@ -855,7 +1017,7 @@ final class AppModel {
         return String(decoding: try encoder.encode(saved), as: UTF8.self)
     }
     func removeAccount(_ id: UUID) async throws {
-        guard !busy, accounts.contains(where: { $0.id == id }) else { throw CollectivesError.invalidResponse }
+        guard !richTextInAnotherWindow, !busy, accounts.contains(where: { $0.id == id }) else { throw CollectivesError.invalidResponse }
         busy = true
         defer { busy = false; resumeTextEditing() }
         await finishTextEditing()
@@ -871,6 +1033,8 @@ final class AppModel {
         try await store.removeAccount(accountID: id) { try credentialStore.remove(accountID: $0) }
         invalidateClient(accountID: id)
         accounts.removeAll { $0.id == id }
+        session.snapshots[id] = nil
+        session.refreshWindows(accountID: id, except: windowID)
         if let activity = syncActivity, activity.accountTotal > 1 {
             reportSyncProgress(activity.progress, account: activity.account, targets: accounts)
         }
@@ -881,6 +1045,7 @@ final class AppModel {
         syncBaselines[id] = nil
         syncIssues[id] = nil
         preferences.remove(accountID: id)
+        session.libraries[id] = nil
         if activeID == id {
             automaticSyncGeneration = nil; pushConnected = false; remoteSyncRequested = false
             activeID = nil; snapshot = AccountSnapshot()
@@ -889,7 +1054,7 @@ final class AppModel {
         }
         message = "Account removed from this device."
     }
-    private func saveLibrary() {
+    func saveLibrary() {
         if let id = activeID { preferences.save(library, accountID: id) }
     }
     private func restoreSelection() async {
@@ -939,7 +1104,7 @@ final class AppModel {
         return true
     }
     func setEmoji(_ emoji: String?) async throws {
-        guard !busy, !syncing, canEdit, let page = selectedPage, let collectiveID = selectedCollective,
+        guard !richTextInAnotherWindow, !busy, !syncing, canEdit, let page = selectedPage, let collectiveID = selectedCollective,
               let accountID = activeID else { throw CollectivesError.invalidResponse }
         busy = true; defer { busy = false; resumeTextEditing() }
         await finishTextEditing()
@@ -953,7 +1118,7 @@ final class AppModel {
         snapshot = next; selectedPage = updated
     }
     func createPage(title: String, parentID: Int, collectiveID: Int, accountID: UUID) async throws {
-        guard !busy, !syncing, activeID == accountID, selectedCollective == collectiveID, canEdit else {
+        guard !richTextInAnotherWindow, !busy, !syncing, activeID == accountID, selectedCollective == collectiveID, canEdit else {
             throw CollectivesError.invalidResponse
         }
         busy = true; defer { busy = false; resumeTextEditing() }
@@ -978,7 +1143,7 @@ final class AppModel {
         }
     }
     func renamePage(title: String, pageID: Int, collectiveID: Int, accountID: UUID) async throws {
-        guard !busy, !syncing, activeID == accountID, selectedCollective == collectiveID, canEdit else {
+        guard !richTextInAnotherWindow, !busy, !syncing, activeID == accountID, selectedCollective == collectiveID, canEdit else {
             throw CollectivesError.invalidResponse
         }
         busy = true; defer { busy = false; resumeTextEditing() }
@@ -999,7 +1164,7 @@ final class AppModel {
         }
     }
     func addAccount(_ login: LoginCredentials) async throws {
-        guard !busy, !syncing else { throw CollectivesError.invalidResponse }
+        guard !richTextInAnotherWindow, !busy, !syncing else { throw CollectivesError.invalidResponse }
         busy = true; defer { busy = false; resumeTextEditing() }
         await finishTextEditing()
         await pendingPersistence?.value
@@ -1188,6 +1353,13 @@ struct ContentView: View {
                 .disabled(model.busy || model.syncing || model.selectedCollective == nil)
         }
     }
+    private func sourceEditorBinding(page: Page) -> Binding<String> {
+        let accountID = model.activeID
+        let generation = model.sourceEditorGeneration
+        return Binding(get: { model.text }, set: { value in
+            model.edited(value, accountID: accountID, pageID: page.id, editorGeneration: generation)
+        })
+    }
     private var detailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let page = model.selectedPage, model.document != nil {
@@ -1202,13 +1374,17 @@ struct ContentView: View {
                     Text(page.title).fontWeight(.medium).foregroundStyle(.primary)
                         .layoutPriority(1)
                 }.font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                if model.editingInAnotherWindow {
+                    Label("Editing in another window. Switch that window to View to edit here.", systemImage: "lock")
+                        .font(.callout).foregroundStyle(.secondary).padding(.horizontal)
+                }
                 if model.pageMode == .richText && model.canEdit && model.document?.conflict == nil {
                     OfflineTextPage(runtime: model.textRuntime)
                 } else if model.pageMode == .edit && model.canEdit {
                     DocumentHeader(model: model, page: page)
                         .frame(maxWidth: 740).frame(maxWidth: .infinity)
                         .padding(.horizontal, 28)
-                    MarkdownSourceEditor(text: Binding(get: { model.text }, set: { model.edited($0) }), disabled: model.busy)
+                    MarkdownSourceEditor(text: sourceEditorBinding(page: page), disabled: model.busy || model.editingInAnotherWindow)
                         .id(pageIdentity)
                 } else {
                     MarkdownReader(showingOutline: $showingOutline, showingFind: $showingFind, model: model, source: model.text, page: page, account: model.account,
