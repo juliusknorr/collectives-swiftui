@@ -159,6 +159,8 @@ final class AppModel {
     var syncSymbol: String {
         if draftSaveFailed || conflictCount > 0 { return "exclamationmark.triangle" }
         if let id = activeID, syncIssues[id] != nil { return "exclamationmark.icloud" }
+        if syncing { return "arrow.triangle.2.circlepath" }
+        if savingDraft { return "externaldrive" }
         if automaticSyncPaused { return "pause.circle" }
         return pendingCount > 0 ? "pencil.circle" : "checkmark.icloud"
     }
@@ -1065,15 +1067,6 @@ struct ContentView: View {
                 }
             }
         }
-        .safeAreaInset(edge: .bottom) {
-            if let activity = model.syncActivity {
-                SyncProgressView(activity: activity, isCancelling: model.isCancellingSync, cancel: { model.cancelSync() })
-                    .frame(maxWidth: 820)
-                    .padding(.horizontal).padding(.vertical, 10)
-                    .frame(maxWidth: .infinity)
-                    .background(AppSurface.chrome)
-            }
-        }
         .task(id: model.busy) {
             showActivity = false
             guard model.busy else { return }
@@ -1489,31 +1482,23 @@ struct ContentView: View {
     }
     private var sidebarFooter: some View {
         HStack(spacing: 12) {
-            HStack(spacing: 6) {
-                if model.syncActivity != nil || model.activeID.map({ model.syncIssues[$0] != nil }) == true {
-                    Button { showSyncIssue.toggle() } label: {
-                        Label(model.syncSummary, systemImage: model.syncSymbol)
-                            .font(.caption).foregroundStyle(.secondary)
-                            .lineLimit(1).truncationMode(.tail)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Show sync details")
-                    .popover(isPresented: $showSyncIssue, arrowEdge: .bottom) {
-                        SyncStatusView(model: model).frame(width: 320)
-                    }
-                    .onChange(of: model.activeID) { _, _ in showSyncIssue = false }
-                    .onDisappear { showSyncIssue = false }
-                } else {
-                    if model.syncing || (model.busy && showActivity) { ProgressView().controlSize(.small) }
-                    else { Image(systemName: model.syncSymbol).foregroundStyle(.secondary) }
-                    Text(model.syncSummary)
-                        .font(.caption).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.tail)
-                }
+            Button { showSyncIssue.toggle() } label: {
+                Image(systemName: model.syncSymbol)
+                    .symbolEffect(.pulse, isActive: model.syncing)
+                    .foregroundStyle(syncNeedsAttention ? Color.orange : Color.secondary)
+                    .frame(width: 24, height: 24)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .clipped()
+            .buttonStyle(.plain)
+            .help("\(model.syncSummary). Show sync details")
+            .accessibilityLabel("Sync status: \(model.syncSummary)")
+            .accessibilityHint("Show sync details")
+            .disabled(model.activeID == nil && model.syncActivity == nil)
+            .popover(isPresented: $showSyncIssue, arrowEdge: .bottom) {
+                SyncStatusView(model: model).frame(width: 320)
+            }
+            .onChange(of: model.activeID) { _, _ in showSyncIssue = false }
+            .onDisappear { showSyncIssue = false }
+            Spacer(minLength: 0)
             HStack(spacing: 12) {
                 Menu {
                     Button("Sync All Accounts", systemImage: "arrow.triangle.2.circlepath") { Task { await model.syncAccounts() } }
@@ -1536,6 +1521,10 @@ struct ContentView: View {
             }.fixedSize()
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
+    }
+    private var syncNeedsAttention: Bool {
+        model.draftSaveFailed || model.conflictCount > 0
+            || model.activeID.map { model.syncIssues[$0] != nil } == true
     }
 
 }

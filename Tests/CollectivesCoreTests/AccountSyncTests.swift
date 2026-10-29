@@ -13,14 +13,24 @@ private actor AccountSyncStub: AccountSyncAPI {
     let failingPages: Set<Int>
     let failingGroups: Set<Int>
     let unchangedPages: Set<Int>
+    let revisions: [Int: String]
+    let metadataFails: Bool
+    private(set) var metadataPages: [Int] = []
     private(set) var downloads: [(Int, String?)] = []
     private(set) var uploads: [(Int, String?)] = []
     private(set) var requestedGroups: [Int] = []
 
     init(groups: [Collective] = [Collective(id: 1, name: "Team")], listings: [Int: [Page]],
-         failingPages: Set<Int> = [], failingGroups: Set<Int> = [], unchangedPages: Set<Int> = []) {
+         failingPages: Set<Int> = [], failingGroups: Set<Int> = [], unchangedPages: Set<Int> = [],
+         revisions: [Int: String] = [:], metadataFails: Bool = false) {
         self.groups = groups; self.listings = listings; self.failingPages = failingPages
         self.failingGroups = failingGroups; self.unchangedPages = unchangedPages
+        self.revisions = revisions; self.metadataFails = metadataFails
+    }
+    func documentETags(pages: [Page]) async throws -> [Int: String] {
+        metadataPages += pages.map(\.id)
+        if metadataFails { throw Failure.unavailable }
+        return revisions
     }
     func collectives() async throws -> [Collective] { groups }
     func pages(collectiveID: Int) async throws -> [Page] {
@@ -141,4 +151,51 @@ private actor AccountSyncCheckpoints {
         }
     }
     #expect(await api.requestedGroups.isEmpty)
+}
+
+@Test func accountSyncUsesFolderRevisionsWithoutSkippingDraftsOrChangedPages() async throws {
+    var snapshot = AccountSnapshot()
+    for id in 1...6 {
+        snapshot.documents[String(id)] = CachedDocument(page: accountSyncPage(id), collectiveID: 1,
+            markdown: "cached \(id)", etag: id == 6 ? "W/\"base\"" : "\"base\"",
+            draft: id == 3 || id == 4 ? "draft" : nil,
+            conflict: id == 4 ? RemoteDocument(markdown: "conflict", etag: "\"other\"") : nil)
+    }
+    let api = AccountSyncStub(listings: [1: (1...7).map { accountSyncPage($0, title: "Renamed \($0)") }],
+        revisions: [1: "\"base\"", 2: "\"changed\"", 3: "\"base\"", 4: "\"base\"", 6: "W/\"base\""])
+    let result = try await AccountSynchronizer.synchronize(snapshot: snapshot, api: api) { _ in }
+    #expect(result.failures.isEmpty)
+    #expect(await api.metadataPages.sorted() == [1, 2, 5])
+    #expect(await api.downloads.map(\.0).sorted() == [2, 5, 6, 7])
+    #expect(await api.uploads.map(\.0) == [3])
+    #expect(result.snapshot.documents["1"]?.markdown == "cached 1")
+    #expect(result.snapshot.documents["1"]?.page.title == "Renamed 1")
+    #expect(result.snapshot.documents["2"]?.markdown == "remote 2")
+    #expect(result.snapshot.documents["4"]?.conflict == snapshot.documents["4"]?.conflict)
+}
+
+@Test func failedMetadataFallsBackToConditionalDownloads() async throws {
+    var snapshot = AccountSnapshot()
+    snapshot.documents["1"] = CachedDocument(page: accountSyncPage(1), collectiveID: 1,
+        markdown: "cached", etag: "\"base\"")
+    let api = AccountSyncStub(listings: [1: [accountSyncPage(1)]], unchangedPages: [1], metadataFails: true)
+    let result = try await AccountSynchronizer.synchronize(snapshot: snapshot, api: api) { _ in }
+    #expect(result.failures.isEmpty)
+    #expect(await api.downloads.count == 1)
+    #expect(await api.downloads.first?.1 == "\"base\"")
+    #expect(result.snapshot.documents["1"]?.markdown == "cached")
+}
+
+@Test func offlineDownloadReusesVerifiedContentAndPreservesLocalWork() async throws {
+    var snapshot = AccountSnapshot()
+    for id in 1...3 {
+        snapshot.documents[String(id)] = CachedDocument(page: accountSyncPage(id), collectiveID: 1,
+            markdown: "cached", etag: "\"base\"", draft: id == 3 ? "draft" : nil)
+    }
+    let api = AccountSyncStub(listings: [1: (1...4).map { accountSyncPage($0) }], revisions: [1: "\"base\"", 2: "\"base\""])
+    let result = try await AccountSynchronizer.download(collectiveID: 1, snapshot: snapshot, api: api) { _ in }
+    #expect(result.failures.isEmpty)
+    #expect(await api.downloads.map(\.0) == [4])
+    #expect(await api.uploads.isEmpty)
+    #expect(result.snapshot.documents["3"]?.draft == "draft")
 }

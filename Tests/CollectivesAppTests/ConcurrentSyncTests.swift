@@ -39,6 +39,9 @@ private actor SuspendedDocumentTransport: HTTPTransport {
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let url = request.url!
+        if request.httpMethod == "PROPFIND" {
+            return (Data(), HTTPURLResponse(url: url, statusCode: 405, httpVersion: nil, headerFields: nil)!)
+        }
         if url.path.hasSuffix("/collectives") {
             let body = #"{"ocs":{"meta":{"statuscode":200},"data":{"collectives":[{"id":7,"name":"Team","canEdit":true}]}}}"#
             return (Data(body.utf8), HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)

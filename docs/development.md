@@ -66,6 +66,17 @@ account deletes both formats, after checking for unsynced work. Older app builds
 do not understand the new layout and would read the stale backup; do not use them
 to edit a migrated library. Use one `LocalStore` actor per storage root.
 
+Full sync and offline downloads check clean cached pages using WebDAV folder
+ETags (`PROPFIND`, depth 1). A folder with multiple cached pages needs one
+metadata request; matching strong ETags skip both content requests and redundant
+document checkpoints. Single-page folders use conditional GET directly. Missing
+or failed metadata falls back to conditional GET, and drafts still upload with
+their original conditional-save protection. Conflicts remain for explicit review.
+Current-page sync always checks the page directly.
+
+Sync status uses the existing sidebar and page-header icons. Click or tap an icon
+for status, progress, errors, and cancellation controls.
+
 ## Local Nextcloud test server
 
 Docker Compose v2 and Python 3 are required:

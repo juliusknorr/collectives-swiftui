@@ -4,7 +4,9 @@
 import json
 import os
 from urllib.error import HTTPError
+from urllib.parse import unquote, urlsplit
 from uuid import uuid4
+from xml.etree import ElementTree
 
 from seed import API, Client, FIXTURES, USERS, dav_path, seed_collective
 
@@ -12,6 +14,24 @@ from seed import API, Client, FIXTURES, USERS, dav_path, seed_collective
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
+
+
+def folder_etag(client, path):
+    folder = path.rsplit("/", 1)[0] + "/"
+    body, _ = client.request("PROPFIND", folder,
+                            b'<d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>',
+                            {"Depth": "1", "Content-Type": "application/xml", "Accept": "application/xml"})
+    root = ElementTree.fromstring(body)
+    for response in root.findall("{DAV:}response"):
+        href = response.findtext("{DAV:}href", "")
+        if unquote(urlsplit(href).path) != unquote(path):
+            continue
+        for propstat in response.findall("{DAV:}propstat"):
+            if propstat.findtext("{DAV:}status", "").split()[1:2] == ["200"]:
+                etag = propstat.findtext("{DAV:}prop/{DAV:}getetag")
+                if etag:
+                    return etag
+    raise RuntimeError("Folder PROPFIND did not return the page's ETag.")
 
 
 def main():
@@ -86,6 +106,10 @@ def main():
         path = dav_path("alice", page)
         _, headers = alice.request("GET", path)
         stale_etag = headers["ETag"]
+        require(folder_etag(alice, path) == stale_etag,
+                "Folder ETag differs from the downloaded revision.")
+        require(folder_etag(alice, dav_path("alice", child)) == alice.request("GET", dav_path("alice", child))[1]["ETag"],
+                "Nested page folder ETag differs from its downloaded revision.")
         expected = b"# Smoke test\n\nChanged remotely.\n"
         alice.request("PUT", path, expected, {
             "Content-Type": "text/markdown", "If-Match": stale_etag,
@@ -99,6 +123,8 @@ def main():
         body, headers = alice.request("GET", path)
         require(body == expected, "Rejected save changed the remote content.")
         require(headers["ETag"] != stale_etag, "Successful save did not change the ETag.")
+        require(folder_etag(alice, path) == headers["ETag"],
+                "Folder metadata did not detect the changed content.")
     finally:
         try:
             if child is not None:
@@ -111,7 +137,7 @@ def main():
     flow = json.loads(body)
     require(bool(flow.get("login")) and bool(flow.get("poll", {}).get("token"))
             and bool(flow.get("poll", {}).get("endpoint")), "Login Flow v2 initiation failed.")
-    print("Real-server smoke checks passed: accounts, nested creation and rename, repeat seed, DAV, ETags, Login Flow v2 initiation.")
+    print("Real-server smoke checks passed: accounts, nested creation and rename, repeat seed, DAV, folder ETags, Login Flow v2 initiation.")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ struct DocumentHeader: View {
     @Bindable var model: AppModel
     let page: Page
     @State private var showIcons = false
+    @State private var showSyncStatus = false
     @State private var error: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -39,14 +40,33 @@ struct DocumentHeader: View {
                 }.buttonStyle(.plain).padding(.top, 8).help("Favorite page")
                     .accessibilityLabel(model.library.favoritePageIDs.contains(page.id) ? "Remove from Favorites" : "Add to Favorites")
             }
-            VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
                 if let timestamp = page.timestamp {
                     let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
                     Text("Edited \(date.formatted(.relative(presentation: .named)))\(page.lastUserDisplayName.map { " by " + $0 } ?? "")")
                         .foregroundStyle(.secondary)
                 }
-                Label(status, systemImage: statusIcon)
-                    .foregroundStyle(model.document?.draft == nil ? Color.secondary : Color.orange)
+                Button { showSyncStatus.toggle() } label: {
+                    Image(systemName: statusIcon)
+                        .symbolEffect(.pulse, isActive: model.syncing)
+                        .foregroundStyle(needsAttention ? Color.orange : Color.secondary)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .help("\(status). Show sync details")
+                .accessibilityLabel(status)
+                .accessibilityHint("Show sync details")
+                .popover(isPresented: $showSyncStatus) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Label(status, systemImage: statusIcon)
+                            .font(.callout).padding(16)
+                        Divider()
+                        SyncStatusView(model: model)
+                    }.frame(width: 320)
+                }
+                .onChange(of: model.selectedPage?.id) { _, _ in showSyncStatus = false }
+                .onChange(of: model.activeID) { _, _ in showSyncStatus = false }
+                .onDisappear { showSyncStatus = false }
             }.font(.caption)
         }
         .padding(.bottom, 8)
@@ -61,6 +81,10 @@ struct DocumentHeader: View {
         if model.syncing { return "Syncing with Nextcloud…" }
         if let id = model.activeID, model.syncIssues[id] != nil { return "Available offline · Sync needs attention" }
         return model.document?.draft == nil ? "Available offline" : "Draft saved on this device"
+    }
+    private var needsAttention: Bool {
+        model.draftSaveFailed || model.document?.hasLocalChanges == true
+            || model.activeID.map { model.syncIssues[$0] != nil } == true
     }
     private var statusIcon: String {
         if model.draftSaveFailed { return "exclamationmark.triangle" }

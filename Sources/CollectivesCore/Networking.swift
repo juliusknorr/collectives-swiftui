@@ -173,11 +173,14 @@ public struct CollectivesClient: Sendable {
         let dirs = (collectivePath + "/" + page.filePath).split(separator: "/").map(String.init)
         return try request(["remote.php", "dav", "files", account.userID] + dirs + [page.fileName]).url!
     }
-    private func documentRequest(page: Page) throws -> URLRequest {
+    func documentRequest(page: Page) throws -> URLRequest {
         var result = try request(["remote.php"])
         result.url = try documentURL(page: page)
         result.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         return result
+    }
+    func sendDocumentMetadata(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        try await transport.send(request)
     }
     public func download(page: Page) async throws -> RemoteDocument {
         guard let remote = try await download(page: page, ifNoneMatch: nil) else { throw CollectivesError.invalidResponse }

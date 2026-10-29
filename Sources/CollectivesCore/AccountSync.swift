@@ -3,6 +3,11 @@ import Foundation
 public protocol AccountSyncAPI: DocumentAPI {
     func collectives() async throws -> [Collective]
     func pages(collectiveID: Int) async throws -> [Page]
+    func documentETags(pages: [Page]) async throws -> [Int: String]
+}
+
+public extension AccountSyncAPI {
+    func documentETags(pages: [Page]) async throws -> [Int: String] { [:] }
 }
 
 extension CollectivesClient: AccountSyncAPI {}
@@ -134,9 +139,23 @@ public enum AccountSynchronizer {
     ) async throws {
         updated.replacePages(pages, collectiveID: collectiveID)
         try await checkpoint(updated)
+        let cleanPages = pages.filter {
+            guard let document = updated.documents[String($0.id)] else { return false }
+            return !document.hasLocalChanges && document.etag?.isEmpty == false
+                && document.etag?.hasPrefix("W/") == false
+        }
+        let revisions: [Int: String]
+        do {
+            revisions = cleanPages.isEmpty ? [:] : try await api.documentETags(pages: cleanPages)
+        } catch {
+            try rethrowCancellation(error)
+            // Metadata is an optimization; conditional downloads remain the fallback.
+            revisions = [:]
+        }
+        try Task.checkCancellation()
         try await synchronizeDocuments(pages: pages, collectiveID: collectiveID, uploadDrafts: uploadDrafts,
                                        snapshot: &updated, failures: &failures, status: &status,
-                                       api: api, progress: progress, checkpoint: checkpoint)
+                                       api: api, revisions: revisions, progress: progress, checkpoint: checkpoint)
     }
 
     /// Uploads pending drafts without refreshing metadata or touching clean pages.
@@ -189,14 +208,20 @@ public enum AccountSynchronizer {
         pages: [Page], collectiveID: Int, uploadDrafts: Bool,
         snapshot updated: inout AccountSnapshot, failures: inout [AccountSyncFailure],
         status: inout AccountSyncProgress, api: any DocumentAPI,
+        revisions: [Int: String] = [:],
         progress: @Sendable (AccountSyncProgress) async -> Void,
         checkpoint: @Sendable (AccountSnapshot) async throws -> Void
     ) async throws {
         var seen: Set<Int> = []
-        let jobs = pages.filter { seen.insert($0.id).inserted }.map {
-            PageJob(page: $0, document: updated.documents[String($0.id)])
+        let uniquePages = pages.filter { seen.insert($0.id).inserted }
+        let jobs = uniquePages.compactMap { page -> PageJob? in
+            let document = updated.documents[String(page.id)]
+            if let document, !document.hasLocalChanges, let etag = document.etag,
+               !etag.isEmpty, !etag.hasPrefix("W/"), etag == revisions[page.id] { return nil }
+            return PageJob(page: page, document: document)
         }
-        status.totalPages = jobs.count
+        status.totalPages = uniquePages.count
+        status.completedPages = uniquePages.count - jobs.count
         status.activePages = []
         await progress(status)
         try await withThrowingTaskGroup(of: PageResult.self) { group in
