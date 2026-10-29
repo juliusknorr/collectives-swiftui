@@ -1,32 +1,26 @@
 :root {
  color-scheme: light dark;
- --color-main-background: #fff; --color-main-text: #252525;
- --color-background-hover: #eee; --color-background-dark: #ededed;
- --color-background-darker: #ddd; --color-text-maxcontrast: #767676;
- --color-primary: #0082c9; --color-primary-element: #0082c9;
- --color-primary-element-text: #fff; --color-primary-element-light: #e5f3fb;
- --color-primary-element-light-hover: #d9edf8;
- --color-border: #ddd; --color-border-dark: #bbb; --color-box-shadow: #0002;
- --color-placeholder-light: #ddd; --color-placeholder-dark: #aaa;
- --border-radius: 4px; --border-radius-large: 8px; --border-radius-element: 6px;
- --default-font-size: 15px; --default-line-height: 1.6;
- --default-clickable-area: 36px; --default-grid-baseline: 4px;
- --animation-quick: 100ms; --animation-slow: 250ms;
- --font-face: -apple-system, BlinkMacSystemFont, sans-serif;
+ /* 16px avoids iOS focus zoom */
+ --default-font-size: 16px;
  --font-face-monospace: ui-monospace, monospace;
 }
-@media (prefers-color-scheme: dark) { :root {
- --color-main-background: #202020; --color-main-text: #eee;
- --color-background-hover: #353535; --color-background-dark: #303030;
- --color-background-darker: #404040; --color-text-maxcontrast: #aaa;
- --color-border: #484848; --color-border-dark: #666;
-}}
+/* iOS only: match UIKit system background colors */
+@supports (-webkit-touch-callout: none) { @media (prefers-color-scheme: dark) { :root {
+ --color-main-background: #000; --color-main-background-rgb: 0, 0, 0;
+ --color-background-hover: #1c1c1e;
+ --color-background-dark: #1c1c1e; --color-background-darker: #2c2c2e;
+ --color-border: #38383a;
+}}}
 * { box-sizing: border-box }
 html, body { margin: 0; min-height: 100%; background: var(--color-main-background); color: var(--color-main-text); font-family: var(--font-face) }
-#editor { min-height: 100vh }
+/* Only the content scrolls, so the menubar stays put when iOS pans the page for the keyboard. */
+html, body { height: 100%; overflow: hidden }
+#editor, #editor .text-editor__wrapper, #editor .editor { height: 100%; min-height: 0 }
+#editor .editor__content-wrapper { flex: 1; min-height: 0; overflow-y: auto }
 #status { position: fixed; bottom: 8px; left: 16px; font-size: 13px }
 button, input { font: inherit }
-.ProseMirror { min-height: 60vh; outline: none }
+#editor :is(input, textarea, select) { font-size: max(16px, 1em) }
+.ProseMirror { min-height: 60vh; outline: none; cursor: text }
 
 /* Paragraph spacing belongs between blocks, not above the first line of a row. */
 #editor .ProseMirror .task-item-content > :first-child,

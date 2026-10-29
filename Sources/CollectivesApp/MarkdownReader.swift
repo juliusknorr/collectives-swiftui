@@ -88,7 +88,11 @@ struct MarkdownReader: View {
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(maxWidth: 740, alignment: .leading)
+                    #if os(macOS)
                     .padding(.horizontal, 28).padding(.vertical, 28)
+                    #else
+                    .padding(.horizontal, 4).padding(.vertical, 16)
+                    #endif
                     .frame(maxWidth: .infinity, alignment: .top)
                 }
                 .coordinateSpace(name: "readingViewport")

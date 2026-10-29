@@ -9,7 +9,7 @@ enum AppSurface {
         #if os(macOS)
         Color(nsColor: .windowBackgroundColor)
         #else
-        Color(uiColor: .secondarySystemBackground)
+        Color(uiColor: .systemGroupedBackground)
         #endif
     }
     static var document: Color {
@@ -507,7 +507,7 @@ final class AppModel {
         }
         text = cached.draft ?? cached.markdown
         message = cached.conflict != nil ? "Conflict: local draft preserved. Choose Review Changes to compare versions." :
-            (cached.draft != nil ? "Local draft waiting to sync." : "Downloaded page. Refresh from server to check for updates.")
+            (cached.draft != nil ? "Local draft waiting to sync." : "")
     }
     func openDraft(_ pageID: Int) async {
         guard !busy else { return }
@@ -1190,6 +1190,14 @@ final class AppModel {
     }
 }
 
+/// iPhone: a list keeps its row highlighted only while a later column is pushed.
+enum CompactNavigation {
+    private static let order: [NavigationSplitViewColumn] = [.sidebar, .content, .detail]
+    static func showsSelection(of list: NavigationSplitViewColumn, at column: NavigationSplitViewColumn) -> Bool {
+        (order.firstIndex(of: column) ?? 0) > (order.firstIndex(of: list) ?? 0)
+    }
+}
+
 private struct SidebarDestination: Hashable {
     let accountID: UUID
     let collectiveID: Int?
@@ -1214,6 +1222,12 @@ struct ContentView: View {
     @State private var conflictReview: ConflictReviewRequest?
     @State private var showActivity = false
     @State private var compactColumn: NavigationSplitViewColumn = .sidebar
+    #if os(macOS)
+    private let compact = false
+    #else
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    private var compact: Bool { sizeClass == .compact }
+    #endif
     var body: some View {
         Group {
             if model.selectedCollective == nil {
@@ -1294,8 +1308,10 @@ struct ContentView: View {
     }
     private var pageList: some View {
         VStack(spacing: 0) {
+            #if os(macOS)
             PageSearchField(text: $search)
                 .padding(.horizontal, 12).padding(.vertical, 10)
+            #endif
             if model.selectedCollective == nil {
                 ContentUnavailableView("Choose a Collective", systemImage: "books.vertical")
             } else if !search.isEmpty && searchResults.isEmpty {
@@ -1321,9 +1337,14 @@ struct ContentView: View {
                         }
                     }
                 }
+                #if os(macOS)
                 .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
+                .scrollContentBackground(.hidden)
+                #else
+                .listStyle(.insetGrouped)
+                #endif
             }
+            #if os(macOS)
             if model.selectedCollective != nil {
                 HStack {
                     Label("\(model.pages.count) pages", systemImage: "doc.text")
@@ -1333,8 +1354,21 @@ struct ContentView: View {
                 .font(.caption).foregroundStyle(.secondary)
                 .padding(.horizontal, 14).padding(.vertical, 10)
             }
+            #endif
         }
         .background(AppSurface.chrome)
+        #if !os(macOS)
+        .searchable(text: $search, prompt: "Search pages")
+        .toolbar {
+            if model.selectedCollective != nil {
+                ToolbarItem(placement: .status) {
+                    Text(model.downloadedCount == model.pages.count ? "\(model.pages.count) pages, all offline"
+                        : "\(model.pages.count) pages, \(model.downloadedCount) offline")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        #endif
         .navigationSplitViewColumnWidth(min: 240, ideal: 290, max: 440)
         .navigationTitle(collectiveTitle)
         .toolbar {
@@ -1373,6 +1407,9 @@ struct ContentView: View {
     private var detailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let page = model.selectedPage, model.document != nil {
+                #if !os(macOS)
+                pageModePicker
+                #endif
                 HStack(spacing: 5) {
                     Text(collectiveTitle)
                     ForEach(pagePath(page)) { ancestor in
@@ -1390,10 +1427,13 @@ struct ContentView: View {
                 }
                 if model.pageMode == .richText && model.canEdit && model.document?.conflict == nil {
                     OfflineTextPage(runtime: model.textRuntime)
+                        #if !os(macOS)
+                        .padding(.horizontal, -detailInset)
+                        #endif
                 } else if model.pageMode == .edit && model.canEdit {
                     DocumentHeader(model: model, page: page)
                         .frame(maxWidth: 740).frame(maxWidth: .infinity)
-                        .padding(.horizontal, 28)
+                        .padding(.horizontal, documentInset)
                     MarkdownSourceEditor(text: sourceEditorBinding(page: page), disabled: model.busy || model.editingInAnotherWindow)
                         .id(pageIdentity)
                 } else {
@@ -1428,27 +1468,31 @@ struct ContentView: View {
             } else {
                 ContentUnavailableView("Select a Page", systemImage: "doc.text", description: Text("Choose a page to read, or download this collective for offline editing."))
             }
-            HStack(spacing: 8) {
-                Text(model.message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                ProgressView().controlSize(.small)
-                    .frame(width: 16, height: 16)
-                    .opacity(model.busy && showActivity ? 1 : 0)
-                    .accessibilityHidden(!model.busy || !showActivity)
-            }
-        }.padding()
+            #if os(macOS)
+            statusLine
+            #endif
+        }
+        #if os(macOS)
+        .padding()
+        #else
+        .padding(.horizontal, detailInset)
+        .padding(.vertical, 8)
+        #endif
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(AppSurface.document)
+        #if !os(macOS)
+        .toolbar {
+            if !model.message.isEmpty || model.busy && showActivity {
+                ToolbarItem(placement: .status) { statusLine }
+            }
+        }
+        #endif
         .toolbar {
             if model.selectedPage != nil, model.document != nil {
                 ToolbarItemGroup(placement: .primaryAction) {
-                    Picker("Page Mode", selection: Binding(get: { model.pageMode }, set: { mode in
-                        Task { await model.changePageMode(mode) }
-                    })) {
-                        ForEach(PageViewMode.allCases, id: \.self) { mode in Text(mode.title).tag(mode) }
-                    }
-                    .pickerStyle(.segmented).labelsHidden().frame(width: 250)
-                    .disabled(model.busy || !model.canEdit)
+                    #if os(macOS)
+                    pageModePicker.frame(width: 250)
+                    #endif
                     Menu {
                         Button("Restore Source from Before Text Editing…") { confirmRestoreText = true }
                             .disabled(model.selectedPage.flatMap { model.snapshot.textSourceBackups?[String($0.id)] } == nil)
@@ -1489,6 +1533,33 @@ struct ContentView: View {
             }
         }
     }
+    private var statusLine: some View {
+        HStack(spacing: 8) {
+            Text(model.message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            ProgressView().controlSize(.small)
+                .frame(width: 16, height: 16)
+                .opacity(model.busy && showActivity ? 1 : 0)
+                .accessibilityHidden(!model.busy || !showActivity)
+        }
+    }
+    private var pageModePicker: some View {
+        Picker("Page Mode", selection: Binding(get: { model.pageMode }, set: { mode in
+            Task { await model.changePageMode(mode) }
+        })) {
+            ForEach(PageViewMode.allCases, id: \.self) { mode in Text(mode.title).tag(mode) }
+        }
+        .pickerStyle(.segmented).labelsHidden()
+        .disabled(model.busy || !model.canEdit)
+    }
+    private let detailInset: CGFloat = 16
+    private var documentInset: CGFloat {
+        #if os(macOS)
+        28
+        #else
+        4
+        #endif
+    }
     private func beginNewPage(parent: Page? = nil) {
         guard !model.busy, model.canEdit, let accountID = model.activeID,
               let collectiveID = model.selectedCollective,
@@ -1516,30 +1587,39 @@ struct ContentView: View {
     }
     private var collectiveSelection: Binding<SidebarDestination?> {
         Binding(get: {
-            model.activeID.map { SidebarDestination(accountID: $0, collectiveID: model.selectedCollective) }
+            if compact && !CompactNavigation.showsSelection(of: .sidebar, at: compactColumn) { return nil }
+            return model.activeID.map { SidebarDestination(accountID: $0, collectiveID: model.selectedCollective) }
         }, set: { destination in
             guard let destination else { return }
+            if compact { compactColumn = destination.collectiveID == nil ? .detail : .content }
             Task {
                 let previous = model.activeID.map {
                     SidebarDestination(accountID: $0, collectiveID: model.selectedCollective)
                 }
-                if await model.openSidebar(accountID: destination.accountID, collectiveID: destination.collectiveID) {
-                    search = ""
-                    if destination.collectiveID == nil { compactColumn = .detail }
-                    else if previous?.collectiveID == nil {
-                        columnVisibility = closeSidebarAfterCollectiveSwitch ? .doubleColumn : .all
-                        compactColumn = .content
-                    } else if previous != destination && closeSidebarAfterCollectiveSwitch {
-                        columnVisibility = .doubleColumn
-                        compactColumn = .content
-                    }
+                guard await model.openSidebar(accountID: destination.accountID, collectiveID: destination.collectiveID) else {
+                    if compact { compactColumn = .sidebar }
+                    return
+                }
+                search = ""
+                if destination.collectiveID == nil { compactColumn = .detail }
+                else if previous?.collectiveID == nil {
+                    columnVisibility = closeSidebarAfterCollectiveSwitch ? .doubleColumn : .all
+                    compactColumn = .content
+                } else if previous != destination && closeSidebarAfterCollectiveSwitch {
+                    columnVisibility = .doubleColumn
+                    compactColumn = .content
                 }
             }
         })
     }
     private var pageSelection: Binding<Int?> {
-        Binding(get: { model.selectedPage?.id }, set: { id in
-            if let page = model.pages.first(where: { $0.id == id }) { Task { await model.openPage(page) } }
+        Binding(get: { compact && !CompactNavigation.showsSelection(of: .content, at: compactColumn) ? nil : model.selectedPage?.id }, set: { id in
+            guard let page = model.pages.first(where: { $0.id == id }) else { return }
+            if compact { compactColumn = .detail }
+            Task {
+                await model.openPage(page)
+                if compact && model.selectedPage?.id != page.id { compactColumn = .content }
+            }
         })
     }
     private var visibleTree: [PageNode] {
@@ -1602,6 +1682,7 @@ struct ContentView: View {
         List(selection: collectiveSelection) {
             ForEach(model.accounts) { account in
                 Section {
+                    #if os(macOS)
                     HStack(spacing: 6) {
                         Label(account.userID, systemImage: "person.crop.circle")
                             .lineLimit(1)
@@ -1617,6 +1698,7 @@ struct ContentView: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityValue(account.serverURL.absoluteString)
                     .padding(.top, account.id == model.accounts.first?.id ? 0 : 12)
+                    #endif
                     NavigationLink(value: SidebarDestination(accountID: account.id, collectiveID: nil)) {
                         HStack(spacing: 9) {
                             Image(systemName: "house").foregroundStyle(.secondary).frame(width: 20)
@@ -1657,23 +1739,45 @@ struct ContentView: View {
                             .buttonStyle(.plain).disabled(model.busy)
                         }
                     }
+                } header: {
+                    #if !os(macOS)
+                    Label(account.userID, systemImage: "person.crop.circle")
+                        .textCase(nil)
+                        .accessibilityValue(account.serverURL.absoluteString)
+                    if let error = model.collectiveListingErrors[account.id] {
+                        Label("Could not refresh collectives", systemImage: "exclamationmark.icloud")
+                            .help(error)
+                    }
+                    #endif
                 }
             }
-            Button { model.beginLogin() } label: {
-                HStack(spacing: 9) {
-                    Image(systemName: "person.badge.plus").frame(width: 20)
-                    Text("Add Account…").lineLimit(1)
+            Section {
+                Button { model.beginLogin() } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: "person.badge.plus").frame(width: 20)
+                        Text("Add Account…").lineLimit(1)
+                    }
+                    #if os(macOS)
+                    .foregroundStyle(.secondary)
+                    #else
+                    .foregroundStyle(.tint)
+                    #endif
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain).disabled(model.busy)
+                #if os(macOS)
+                .padding(.top, 12)
+                #endif
             }
-            .buttonStyle(.plain).disabled(model.busy)
-            .padding(.top, 12)
         }
         .font(.body)
+        #if os(macOS)
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+        #else
+        .listStyle(.insetGrouped)
+        #endif
     }
     private var sidebarFooter: some View {
         HStack(spacing: 12) {
@@ -1681,7 +1785,7 @@ struct ContentView: View {
                 Image(systemName: model.syncSymbol)
                     .symbolEffect(.pulse, isActive: model.syncing)
                     .foregroundStyle(syncNeedsAttention ? Color.orange : Color.secondary)
-                    .frame(width: 24, height: 24)
+                    .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
             .help("\(model.syncSummary). Show sync details")
@@ -1701,7 +1805,7 @@ struct ContentView: View {
                     Button("Refresh All Collectives", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
                     Divider()
                     Toggle("Auto-sync Active Account", isOn: $automaticSync)
-                } label: { Image(systemName: "arrow.triangle.2.circlepath") }
+                } label: { Image(systemName: "arrow.triangle.2.circlepath").frame(width: 44, height: 44) }
                     .buttonStyle(.plain).menuIndicator(.hidden)
                     .fixedSize().disabled(model.busy || model.syncing)
                     .accessibilityLabel("Sync Actions")
@@ -1710,7 +1814,7 @@ struct ContentView: View {
                     .buttonStyle(.plain).help("Settings")
                     .accessibilityLabel("Settings")
                 #else
-                Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                Button { showSettings = true } label: { Image(systemName: "gearshape").frame(width: 44, height: 44) }
                     .buttonStyle(.plain).accessibilityLabel("Settings")
                 #endif
             }.fixedSize()

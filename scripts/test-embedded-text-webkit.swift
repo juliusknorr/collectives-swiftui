@@ -1,4 +1,5 @@
 // macOS integration smoke: actual bundled Text in an offline local-file WKWebView.
+// Optional second argument sets the viewport width, e.g. 390 for phone toolbar layout.
 import AppKit
 import WebKit
 
@@ -27,7 +28,7 @@ final class Smoke: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
             window.addEventListener('error', event => window.webkit.messageHandlers.diagnostics.postMessage(event.message));
             window.addEventListener('unhandledrejection', event => window.webkit.messageHandlers.diagnostics.postMessage(String(event.reason)));
             """, injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        view = WKWebView(frame: CGRect(x: 0, y: 0, width: 900, height: 700), configuration: configuration)
+        view = WKWebView(frame: CGRect(x: 0, y: 0, width: CGFloat(CommandLine.arguments.count > 2 ? Double(CommandLine.arguments[2]) ?? 900 : 900), height: 700), configuration: configuration)
         view.navigationDelegate = self
         coldStart = Date()
         view.loadFileURL(root.appendingPathComponent("index.html"), allowingReadAccessTo: root)
@@ -48,6 +49,13 @@ final class Smoke: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                 await new Promise(resolve => setTimeout(resolve, 25));
                 window.webkit.messageHandlers.textEditor.postMessage({type:'editing',session:input.session});
                 if (document.querySelector('.ProseMirror').getAttribute('contenteditable') !== 'true') throw new Error('Editor is read-only after opening');
+                const surface = document.querySelector('.ProseMirror');
+                if (getComputedStyle(surface).cursor !== 'text') throw new Error('Editable text must show a text cursor');
+                if (parseFloat(getComputedStyle(surface).fontSize) < 16) throw new Error('Editor text is small enough to trigger iOS focus zoom');
+                const viewport = document.querySelector('meta[name="viewport"]').content;
+                if (/user-scalable\\s*=\\s*no|maximum-scale\\s*=/.test(viewport)) throw new Error('Manual zoom must remain available');
+                if (!getComputedStyle(document.documentElement).getPropertyValue('--color-primary-element-hover')) throw new Error('Nextcloud theme variables are missing');
+                if (getComputedStyle(document.body.appendChild(document.createElement('ul'))).listStyleType !== 'none') throw new Error('Nextcloud list reset is missing, menus show bullets');
                 editor.insertAtCursor(' Offline edit 日本語');
                 const retainedHTML = editor.getHTML();
                 await window.finishTextEditor({retainContent:true});
@@ -79,9 +87,15 @@ final class Smoke: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                     if (!state.editable || document.querySelector('.ProseMirror').getAttribute('contenteditable') !== 'true') throw new Error('Reused editor is read-only');
                     if (state.canUndo || state.canRedo) throw new Error('Previous page undo/redo history leaked');
                     if (editor.getHTML() !== html) throw new Error('Reset changed rendered content');
+                    window.scrollTo(0, 1e5);
+                    const content = document.querySelector('.editor__content-wrapper');
+                    content.scrollTop = 1e5;
+                    await new Promise(resolve => setTimeout(resolve, 25));
+                    if (content.scrollTop === 0) throw new Error('Long page did not scroll inside the content area');
+                    if (window.scrollY !== 0 || document.querySelector('.text-menubar').getBoundingClientRect().top !== 0) throw new Error('Menubar scrolled out of view');
                     await window.finishTextEditor();
                     return null;
-                    """, arguments: ["input": ["session": session, "markdown": "# Second page\n\nExact **source**\n"]], in: nil, in: .page) { result in
+                    """, arguments: ["input": ["session": session, "markdown": "# Second page\n\nExact **source**\n" + String(repeating: "\nLong page paragraph\n", count: 80)]], in: nil, in: .page) { result in
                     if case .failure(let error) = result { self.fail("Reuse failed: \(error)") }
                 }
             } else {
@@ -90,7 +104,7 @@ final class Smoke: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                 print("PASS: Offline Text cold/warm startup, rich Unicode edit, Markdown serialization, and retained-content page handoff, blocked stale input, and clean next-page source/history.")
                 exit(0)
             }
-        case "error": fail("Offline editor reported a runtime failure")
+        case "error": fail("Offline editor reported a runtime failure: \(body)")
         default: fail("Unexpected bridge message: \(type)")
         }
     }

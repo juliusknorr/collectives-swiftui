@@ -9,9 +9,13 @@ final class OfflineTextRuntime: NSObject, WKScriptMessageHandler, WKNavigationDe
     private(set) var loaded = false
     private(set) var retainingContent = false
     private(set) var failed = false
+    private(set) var failureDiagnostic: String?
     private(set) var warmed = false
     @ObservationIgnored private(set) var webView: WKWebView?
     @ObservationIgnored private var indexURL: URL?
+    #if !os(macOS)
+    @ObservationIgnored private var pageScrollLock: NSKeyValueObservation?
+    #endif
     @ObservationIgnored private var ready = false
     @ObservationIgnored private var session: EmbeddedTextSession?
     @ObservationIgnored private var onUpdate: ((Int, String) -> Void)?
@@ -28,13 +32,26 @@ final class OfflineTextRuntime: NSObject, WKScriptMessageHandler, WKNavigationDe
         configuration.userContentController.add(self, name: "textEditor")
         let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 900, height: 700), configuration: configuration)
         view.navigationDelegate = self
+        #if !os(macOS)
+        // Only the editor content scrolls. iOS pans the page itself to reveal the caret
+        // above the keyboard, which pushes the menubar out of view, so pin the page
+        // unless the user zoomed in.
+        view.scrollView.contentInsetAdjustmentBehavior = .never
+        view.scrollView.bounces = false
+        pageScrollLock = view.scrollView.observe(\.contentOffset) { scrollView, _ in
+            MainActor.assumeIsolated {
+                guard scrollView.zoomScale <= scrollView.minimumZoomScale, scrollView.contentOffset != .zero else { return }
+                scrollView.contentOffset = .zero
+            }
+        }
+        #endif
         webView = view
         loadAssets()
     }
     private func loadAssets() {
         guard let root = Bundle.main.resourceURL?.appendingPathComponent("EmbeddedText"),
-              FileManager.default.fileExists(atPath: root.appendingPathComponent("index.html").path) else { fail(); return }
-        ready = false; loaded = false; retainingContent = false; warmed = false; failed = false; launched = false
+              FileManager.default.fileExists(atPath: root.appendingPathComponent("index.html").path) else { fail("bundled editor assets missing"); return }
+        ready = false; loaded = false; retainingContent = false; warmed = false; failed = false; failureDiagnostic = nil; launched = false
         indexURL = root.appendingPathComponent("index.html").standardizedFileURL
         webView?.loadFileURL(root.appendingPathComponent("index.html"), allowingReadAccessTo: root)
     }
@@ -94,6 +111,7 @@ final class OfflineTextRuntime: NSObject, WKScriptMessageHandler, WKNavigationDe
     }
     private func fail(_ reason: String = "script or asset failure") {
         Logger(subsystem: "org.nextcloud.collectives", category: "TextRuntime").error("Text runtime failure: \(reason, privacy: .public)")
+        failureDiagnostic = reason
         failed = true
         if finishing { clearSession() }
     }
@@ -117,7 +135,7 @@ final class OfflineTextRuntime: NSObject, WKScriptMessageHandler, WKNavigationDe
         default:
             guard let session, body["session"] as? String == session.id.uuidString else { return }
             switch type {
-            case "loaded": loaded = true; failed = false; retainingContent = false
+            case "loaded": loaded = true; failed = false; failureDiagnostic = nil; retainingContent = false
             case "update":
                 guard let revision = body["revision"] as? Int, let markdown = body["markdown"] as? String else { return }
                 onUpdate?(revision, markdown)
@@ -140,18 +158,21 @@ struct OfflineTextPage: View {
     @State private var showProgress = false
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Label("Rich Text · Experimental", systemImage: "textformat")
-                Spacer()
-                Text("Original source backed up · Sync paused")
-            }.font(.caption).foregroundStyle(.secondary).padding(.vertical, 6)
             ZStack {
                 OfflineTextWebView(runtime: runtime)
-                    .allowsHitTesting(runtime.loaded)
-                    .accessibilityHidden(!runtime.loaded)
+                    .opacity(runtime.failed ? 0 : 1)
+                    .allowsHitTesting(runtime.loaded && !runtime.failed)
+                    .accessibilityHidden(!runtime.loaded || runtime.failed)
                 if runtime.failed {
-                    ContentUnavailableView("Rich Text Unavailable", systemImage: "exclamationmark.triangle",
-                        description: Text("Switch to View or Edit. Saved edits and the original source are retained."))
+                    ContentUnavailableView {
+                        Label("Rich Text Unavailable", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text("Switch to View or Edit. Saved edits and the original source are retained.")
+                        if let diagnostic = runtime.failureDiagnostic {
+                            Text("Diagnostic: \(diagnostic)")
+                                .font(.caption).textSelection(.enabled)
+                        }
+                    }
                 } else if needsProgress && showProgress {
                     ProgressView("Preparing rich text…")
                 }
