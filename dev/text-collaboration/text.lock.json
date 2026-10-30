@@ -1,0 +1,7 @@
+{
+  "project": "Nextcloud Text",
+  "revision": "e3c02e800c15002323124ca118849316416faebb",
+  "archive_sha256": "4ebe67db3a82181483e848ba1f217c8f2ee308f5ac61bcd3ac380490e9a02c05",
+  "version": "10.0.0-dev.3",
+  "bundler": "esbuild@0.25.12"
+}

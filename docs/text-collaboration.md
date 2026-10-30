@@ -1,7 +1,9 @@
 # Text collaboration investigation
 
-Investigated 2026-10-30. This is a source review and proposed spike, with no
-collaboration implementation or live-session verification yet.
+Investigated 2026-10-30. The source review below is followed by a completed
+[native two-client spike](../dev/text-collaboration/README.md). Live checks pass
+against Text 10.0.0-dev.3 on an isolated Nextcloud 36-dev server. App integration
+and durable offline collaborative recovery remain open.
 
 The app branch is `research/text-collaboration`, based on `e11e999`. Upstream
 `nextcloud/text` main resolved to `e3c02e800c15002323124ca118849316416faebb`.
@@ -148,5 +150,9 @@ Acceptance checks for that spike:
 - Later offline phase: cold restart preserves acknowledged local Yjs state;
   deleted/replaced files and changed base generations require explicit recovery.
 
-No app build or tests were run for this documentation-only investigation. Live
-session, WebKit collaboration, and distribution validation remain open.
+The initial source review required no app build. The follow-up spike bundles
+the latest pinned Text assets, compiles a standalone native WebKit harness, and
+passes real-server checks for concurrent convergence, reconnect, confirmed file
+saving, conditional DAV handoff, session expiry recovery checkpoints, bridge
+identity rejection, and no-edit source preservation. Distribution validation
+and production app integration remain open.
