@@ -25,6 +25,7 @@ final class AppSession {
     var libraries: [UUID: PageLibraryState] = [:]
     var windows: [WeakAppWindow] = []
     var editorOwners: [DocumentKey: UUID] = [:]
+    var textCollaboration = TextDocumentOwnership()
     var accounts: [Account] = []
     var accountCollectives: [UUID: [Collective]] = [:]
     var collectiveListingErrors: [UUID: String] = [:]
@@ -48,6 +49,7 @@ final class AppSession {
     var checkpointVersions: [UUID: Int] = [:]
     var lastEdit: Date = Date.distantPast
     func editorOwner(accountID: UUID, pageID: Int) -> UUID? {
+        if let lease = textCollaboration.lease(for: .init(accountID: accountID, pageID: pageID)) { return lease.windowID }
         let key = DocumentKey(accountID: accountID, pageID: pageID)
         guard let owner = editorOwners[key] else { return nil }
         guard windows.contains(where: { $0.value?.windowID == owner && $0.value?.activeID == accountID && $0.value?.selectedPage?.id == pageID }) else {
@@ -56,7 +58,19 @@ final class AppSession {
         return owner
     }
     var hasRichTextEditor: Bool {
-        windows.contains { $0.value?.textSession != nil }
+        !textCollaboration.isEmpty || windows.contains { $0.value?.textSession != nil }
+    }
+    func beginTextCollaboration(accountID: UUID, pageID: Int, windowID: UUID) throws -> TextDocumentOwnership.Lease {
+        guard !busy, !syncing, !savingDraft, !persistenceFailed, !hasRichTextEditor,
+              let window = windows.compactMap(\.value).first(where: { $0.windowID == windowID }),
+              window.activeID == accountID, window.selectedPage?.id == pageID, window.canEdit,
+              window.document?.hasLocalChanges == false,
+              editorOwner(accountID: accountID, pageID: pageID).map({ $0 == windowID }) ?? true else {
+            throw TextSessionError.invalidState
+        }
+        let lease = try textCollaboration.acquire(.init(accountID: accountID, pageID: pageID), windowID: windowID)
+        window.invalidateSourceEditorCallbacks()
+        return lease
     }
     func refreshWindows(accountID: UUID, except source: UUID? = nil) {
         windows.removeAll { $0.value == nil }
