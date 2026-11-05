@@ -17,5 +17,4 @@ if not archive.exists():
         shutil.copyfileobj(response, output)
 PY
 python3 dev/text-collaboration/build.py
-xcrun swiftc dev/text-collaboration/Smoke.swift -o .build/text-collaboration/smoke
-.build/text-collaboration/smoke .build/text-collaboration/runtime "${TEXT_SPIKE_URL:-http://localhost:18081}"
+swift run --scratch-path .build/local TextCollaborationSmoke .build/text-collaboration/runtime "${TEXT_SPIKE_URL:-http://localhost:18081}"

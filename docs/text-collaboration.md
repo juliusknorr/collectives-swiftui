@@ -1,6 +1,11 @@
 # Text collaboration plan
 
-Updated: 2026-11-04. Plan branch: `plan/text-collaboration`.
+Updated: 2026-11-05. Plan branch: `plan/text-collaboration`.
+
+Implementation is underway on `feat/text-collaboration`. The first batch adds
+the [native session boundary and app ownership rules](text-session-contract.md),
+with regression tests and reuse by the live WebKit harness. The JavaScript
+embedding API and app UI orchestration remain open.
 
 Goal: integrate live Nextcloud Text collaboration into the native app, preserve
 offline work, and use a compatible editor runtime for each account/server.

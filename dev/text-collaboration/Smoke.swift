@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import CollectivesCore
 
 enum SpikeError: Error, CustomStringConvertible {
     case failed(String)
@@ -68,6 +69,26 @@ final class Server {
     }
 
     var davRoot: String { "remote.php/dav/files/\(user)" }
+    func textClient(fileID: Int, transport: any HTTPTransport) throws -> TextSessionClient {
+        try TextSessionClient(client: CollectivesClient(account: Account(serverURL: base, userID: user),
+            credential: Credential(loginName: user, appPassword: password), transport: transport), fileID: fileID)
+    }
+}
+
+// The test fixture records one native request solely to close its session on the
+// server behind the client. No recorded credentials cross the WebKit bridge.
+private actor NativeRequestFixture: HTTPTransport {
+    private let transport = URLSessionTransport()
+    private var lastBody: Data?
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        lastBody = request.httpBody
+        return try await transport.send(request)
+    }
+    func send(_ request: URLRequest, maximumResponseBytes: Int) async throws -> (Data, HTTPURLResponse) {
+        lastBody = request.httpBody
+        return try await transport.send(request, maximumResponseBytes: maximumResponseBytes)
+    }
+    func sessionBody() -> Data? { lastBody }
 }
 
 @MainActor
@@ -86,13 +107,16 @@ final class Peer: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageHand
     var rejectedStatuses: [Int] = []
     private var documentID: String?
     private var sessionID: Int?
-    private var sessionToken: String?
     private var baseVersionEtag: String?
-    private var closing = false
+    private let native: TextSessionClient
+    private let fixture: NativeRequestFixture
 
-    init(name: String, server: Server, root: URL, fileID: Int, recovery: URL) {
+    init(name: String, server: Server, root: URL, fileID: Int, recovery: URL) throws {
         self.name = name; self.server = server; self.root = root
         self.fileID = fileID; self.recovery = recovery
+        let fixture = NativeRequestFixture()
+        self.fixture = fixture
+        native = try server.textClient(fileID: fileID, transport: fixture)
         super.init()
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
@@ -117,7 +141,7 @@ final class Peer: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageHand
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
-                               replyHandler: @escaping (Any?, String?) -> Void) {
+                               replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         guard trusted(message), let input = message.body as? [String: Any],
               let operation = input["operation"] as? String,
               ["create", "sync", "push", "save", "close"].contains(operation),
@@ -135,43 +159,52 @@ final class Peer: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageHand
         counts[operation, default: 0] += 1
         if offline { return ["status": 503, "data": [:]] }
         if holdSaves && operation == "save" { return ["status": 503, "data": [:]] }
-        let path: String
-        var body: [String: Any] = [:]
+        let command: TextSessionCommand
         if operation == "create" {
-            guard documentID == nil, !closing else { return ["status": 409, "data": [:]] }
-            path = "index.php/apps/text/session/file/\(fileID)/create"
+            command = .open
         } else {
-            guard !closing || operation == "close", let documentID, let sessionID, let sessionToken,
+            guard let documentID, let sessionID,
                   input["documentId"] as? String == documentID,
                   input["sessionId"] as? Int == sessionID,
                   input["sessionToken"] as? String == "native-owned"
             else { return ["status": 403, "data": [:]] }
-            path = "index.php/apps/text/session/\(documentID)/\(operation)"
-            body = ["documentId": documentID, "sessionId": sessionID, "sessionToken": sessionToken]
-            if operation != "close" {
-                guard let version = input["version"] as? Int, version >= -1 else { return ["status": 400, "data": [:]] }
-                body["version"] = version; body["baseVersionEtag"] = baseVersionEtag
-                for key in ["steps", "awareness", "recoveryAttempt", "autosaveContent", "documentState", "manualSave"] {
-                    body[key] = input[key]
+            if operation == "close" { command = .close }
+            else {
+                guard let version = input["version"] as? Int else { return ["status": 400, "data": [:]] }
+                switch operation {
+                case "sync": command = .sync(version: version)
+                case "push":
+                    guard let steps = input["steps"] as? [String], let awareness = input["awareness"] as? String else { return ["status": 400, "data": [:]] }
+                    command = .push(version: version, steps: steps, awareness: awareness, recoveryAttempt: input["recoveryAttempt"] as? Int)
+                case "save":
+                    guard let markdown = input["autosaveContent"] as? String, let state = input["documentState"] as? String,
+                          let manual = input["manualSave"] as? Bool else { return ["status": 400, "data": [:]] }
+                    command = .save(version: version, markdown: markdown, documentState: state, manual: manual)
+                default: return ["status": 400, "data": [:]]
                 }
-                body["force"] = false
-            } else { closing = true }
+            }
         }
-        let (status, received) = try await server.json(operation == "create" ? "PUT" : "POST", path, body)
-        if status >= 400 { rejectedStatuses.append(status) }
-        var result = received
-        if operation == "create", status == 200 {
+        let reply: TextSessionReply
+        do { reply = try await native.send(command, leaseID: native.leaseID) }
+        catch TextSessionError.http(let status) {
+            rejectedStatuses.append(status)
+            return ["status": status, "data": [:]]
+        } catch TextSessionError.invalidState { return ["status": 409, "data": [:]] }
+        catch TextSessionError.staleLease { return ["status": 403, "data": [:]] }
+        let encoded = try JSONEncoder().encode(reply.payload)
+        let decoded = try JSONSerialization.jsonObject(with: encoded)
+        let result = decoded as? [String: Any] ?? [:]
+        if operation == "create" {
             guard let doc = result["document"] as? [String: Any],
                   let id = doc["id"] as? String, !id.isEmpty,
                   !id.contains("/"), !id.contains("\\"), id != ".", id != "..",
                   let base = doc["baseVersionEtag"] as? String,
-                  var session = result["session"] as? [String: Any],
-                  let sid = session["id"] as? Int, let token = session["token"] as? String
+                  let session = result["session"] as? [String: Any],
+                  let sid = session["id"] as? Int
             else { throw SpikeError.failed("Unexpected Text 10 session response") }
-            documentID = id; sessionID = sid; sessionToken = token; baseVersionEtag = base
-            session["token"] = "native-owned"; result["session"] = session
+            documentID = id; sessionID = sid; baseVersionEtag = base
         }
-        return ["status": status, "data": result]
+        return ["status": 200, "data": decoded]
     }
 
     func js(_ expression: String, _ arguments: [String: Any] = [:]) async throws -> Any? {
@@ -191,7 +224,11 @@ final class Peer: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageHand
         try JSONSerialization.data(withJSONObject: data).write(to: recovery, options: .atomic)
     }
     func expireSession() async throws {
-        guard let documentID, let sessionID, let sessionToken else { throw SpikeError.failed("No session to expire") }
+        guard let data = await fixture.sessionBody(),
+              let body = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let documentID = body["documentId"] as? String,
+              let sessionID = body["sessionId"] as? Int,
+              let sessionToken = body["sessionToken"] as? String else { throw SpikeError.failed("No session to expire") }
         let (status, _) = try await server.json("POST", "index.php/apps/text/session/\(documentID)/close",
             ["documentId": documentID, "sessionId": sessionID, "sessionToken": sessionToken])
         try require(status == 200, "Could not close session on server")
@@ -242,7 +279,7 @@ final class Smoke {
         let initial = "# Native collaboration\n\nShared starting text.\n"
         let (path, fileID) = try await createFixture(initial)
         for name in ["A", "B"] {
-            peers.append(Peer(name: name, server: server, root: root, fileID: fileID,
+            peers.append(try Peer(name: name, server: server, root: root, fileID: fileID,
                               recovery: output.appendingPathComponent("recovery-\(name).json")))
         }
         let a = peers[0], b = peers[1]
@@ -285,7 +322,7 @@ final class Smoke {
     func noEditProbe() async throws {
         let original = "# Source preservation\n\n<custom-native-spike data-value=\"untouched\">Opaque source</custom-native-spike>\n\n<!-- retain this exact comment -->\n"
         let (path, fileID) = try await createFixture(original)
-        let peer = Peer(name: "No-edit", server: server, root: root, fileID: fileID,
+        let peer = try Peer(name: "No-edit", server: server, root: root, fileID: fileID,
                         recovery: output.appendingPathComponent("recovery-no-edit.json"))
         probe = peer
         try await wait("no-edit runtime") { peer.ready }
