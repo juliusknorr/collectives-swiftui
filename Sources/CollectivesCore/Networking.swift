@@ -150,6 +150,16 @@ public struct CollectivesClient: Sendable {
         guard data.count <= maximumResponseBytes else { throw TextSessionError.messageTooLarge }
         return data
     }
+    func textRuntimeManifest() async throws -> Data {
+        var outgoing = try request(["index.php", "apps", "text", "embedding"])
+        outgoing.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
+        outgoing.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        let (data, response) = try await transport.send(outgoing, maximumResponseBytes: 16 * 1_024)
+        guard response.url == outgoing.url else { throw CollectivesError.unsafeURL }
+        if [404, 503].contains(response.statusCode) { throw TextRuntimeError.unavailable }
+        guard response.statusCode == 200 else { throw TextSessionError.http(response.statusCode) }
+        return data
+    }
     func ocs<T: Decodable>(_ type: T.Type, path: [String], method: String = "GET", body: Data? = nil) async throws -> T {
         var outgoing = try request(path)
         outgoing.httpMethod = method

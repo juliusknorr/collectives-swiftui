@@ -22,6 +22,8 @@ final class NoRedirects: NSObject, URLSessionTaskDelegate {
 final class Server {
     let base: URL
     let user: String
+    let account: Account
+    private var verifiedRuntime: VerifiedTextRuntime?
     private var password: String
     private let redirects = NoRedirects()
     private lazy var session: URLSession = {
@@ -34,6 +36,7 @@ final class Server {
 
     init(base: URL, user: String, password: String) {
         self.base = base; self.user = user; self.password = password
+        account = Account(serverURL: base, userID: user)
     }
 
     func request(_ method: String, _ path: String, body: Data? = nil,
@@ -69,9 +72,14 @@ final class Server {
     }
 
     var davRoot: String { "remote.php/dav/files/\(user)" }
+    func verifyRuntime(_ expected: TextRuntimeManifest) async throws {
+        let client = CollectivesClient(account: account, credential: Credential(loginName: user, appPassword: password))
+        verifiedRuntime = try await client.verifyTextRuntime(expected: expected)
+    }
     func textClient(fileID: Int, transport: any HTTPTransport) throws -> TextSessionClient {
-        try TextSessionClient(client: CollectivesClient(account: Account(serverURL: base, userID: user),
-            credential: Credential(loginName: user, appPassword: password), transport: transport), fileID: fileID)
+        guard let verifiedRuntime else { throw TextRuntimeError.unavailable }
+        let client = CollectivesClient(account: account, credential: Credential(loginName: user, appPassword: password), transport: transport)
+        return try client.textSession(fileID: fileID, verifiedRuntime: verifiedRuntime)
     }
 }
 
@@ -233,6 +241,16 @@ final class Peer: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageHand
             ["documentId": documentID, "sessionId": sessionID, "sessionToken": sessionToken])
         try require(status == 200, "Could not close session on server")
     }
+    func checkRuntimeMismatch() async throws {
+        guard let data = await fixture.sessionBody(),
+              var body = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let documentID = body["documentId"] as? String else { throw SpikeError.failed("No active session for runtime guard test") }
+        body["runtimeDigest"] = String(repeating: "0", count: 64)
+        for operation in ["sync", "push", "save"] {
+            let (status, _) = try await server.json("POST", "index.php/apps/text/session/\(documentID)/\(operation)", body)
+            try require(status == 412, "Server accepted \(operation) with an incompatible runtime")
+        }
+    }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
         navigationAction.request.url?.standardizedFileURL == root.appendingPathComponent("index.html").standardizedFileURL ? .allow : .cancel
     }
@@ -275,9 +293,15 @@ final class Smoke {
     func run() async throws {
         try await server.useAppPassword()
         print("PASS: Native app-password authentication")
+        let expected = try JSONDecoder().decode(TextRuntimeManifest.self, from: Data(contentsOf: root.appendingPathComponent("compatibility.json")))
+        try await server.verifyRuntime(expected)
+        print("PASS: Authenticated runtime manifest exactly matches the bundled build")
         try await noEditProbe()
         let initial = "# Native collaboration\n\nShared starting text.\n"
         let (path, fileID) = try await createFixture(initial)
+        let (incompatible, _) = try await server.json("PUT", "index.php/apps/text/session/file/\(fileID)/create", ["runtimeDigest": String(repeating: "0", count: 64)])
+        try require(incompatible == 412, "Server accepted a session for a different runtime digest")
+        print("PASS: Server rejects a mismatched runtime before creating a session")
         for name in ["A", "B"] {
             peers.append(try Peer(name: name, server: server, root: root, fileID: fileID,
                               recovery: output.appendingPathComponent("recovery-\(name).json")))
@@ -293,6 +317,8 @@ final class Smoke {
             return true
         }
         print("PASS: Two isolated WKWebViews joined real Text sessions")
+        try await a.checkRuntimeMismatch()
+        print("PASS: Server rejects incompatible runtimes on sync, push and save")
         let isolated = try await a.js("""
             const response = await window.webkit.messageHandlers.textTransport.postMessage({
                 operation: 'push', body: { documentId: 'another-document', sessionId: 1,

@@ -113,16 +113,19 @@ public actor TextSessionClient {
     public private(set) var phase = Phase.idle
     private let client: CollectivesClient
     private let maximumMessageBytes: Int
+    private let runtimeDigest: String?
     private var documentID: String?
     private var sessionID: Int?
     private var sessionToken: String?
     private var baseVersionEtag: String?
     private var inFlight: Set<String> = []
 
-    public init(client: CollectivesClient, fileID: Int, leaseID: UUID = UUID(), maximumMessageBytes: Int = 4 * 1_024 * 1_024) throws {
+    init(client: CollectivesClient, fileID: Int, leaseID: UUID = UUID(), maximumMessageBytes: Int = 4 * 1_024 * 1_024,
+         runtimeDigest: String? = nil) throws {
         guard fileID > 0, maximumMessageBytes > 0 else { throw TextSessionError.invalidMessage }
         self.client = client; self.fileID = fileID; self.leaseID = leaseID
         accountID = client.account.id; self.maximumMessageBytes = maximumMessageBytes
+        self.runtimeDigest = runtimeDigest
     }
 
     public func send(_ command: TextSessionCommand, leaseID: UUID) async throws -> TextSessionReply {
@@ -139,6 +142,7 @@ public actor TextSessionClient {
         case .open:
             guard phase == .idle else { throw TextSessionError.invalidState }
             path = ["file", String(fileID), "create"]
+            if let runtimeDigest { body["runtimeDigest"] = .string(runtimeDigest) }
             phase = .opening
         case .close:
             guard [.active, .recoveryRequired].contains(phase), inFlight.isEmpty,
@@ -154,6 +158,7 @@ public actor TextSessionClient {
             path = [documentID, operation]
             body["documentId"] = .string(documentID); body["sessionId"] = .integer(sessionID)
             body["sessionToken"] = .string(sessionToken); body["baseVersionEtag"] = .string(baseVersionEtag)
+            if let runtimeDigest { body["runtimeDigest"] = .string(runtimeDigest) }
         }
         inFlight.insert(operation)
         defer { inFlight.remove(operation) }

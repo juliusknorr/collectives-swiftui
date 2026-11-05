@@ -4,7 +4,9 @@ Updated: 2026-11-05. Plan branch: `plan/text-collaboration`.
 
 Implementation is underway on `feat/text-collaboration`. The first batch adds
 the [native session boundary and app ownership rules](text-session-contract.md),
-with regression tests and reuse by the live WebKit harness. The JavaScript
+with regression tests and reuse by the live WebKit harness. A second batch adds
+an authenticated runtime manifest, account-scoped verification and per-request
+digest checks through a local experimental server overlay. The JavaScript
 embedding API and app UI orchestration remain open.
 
 Goal: integrate live Nextcloud Text collaboration into the native app, preserve
@@ -28,8 +30,11 @@ and app ownership rules together, using the proven bundled runtime first.
   comments have been posted as part of this work.
 - [ ] Keep authentication and session credentials in Swift, with a narrow,
   validated WebKit bridge and bounded requests/responses.
-- [ ] Gate collaboration on verified runtime/server compatibility. Retain native
-  Markdown source editing where a compatible collaboration runtime is unavailable.
+- [x] Add native runtime/server verification and per-request digest checks in the
+  live harness, using a local experimental server overlay. This is a server build
+  assertion requiring atomic code/manifest deployment, not remote asset attestation.
+- [ ] Wire the compatibility gate into the experimental UI. Retain native Markdown
+  source editing where a compatible collaboration runtime is unavailable.
 - [ ] Integrate exclusive document ownership with the native draft queue and Mac
   windows. Entry must quiesce and flush native saves before opening a session.
 - [ ] On exit, freeze edits, checkpoint local state, drain updates, confirm the

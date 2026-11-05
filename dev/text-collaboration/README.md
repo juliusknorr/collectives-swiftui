@@ -3,7 +3,7 @@
 This standalone macOS WebKit harness proves two-client collaboration against a
 real Text server. It is separate from the app's existing offline rich editor.
 
-Validated on 2026-10-30 with:
+Validated on 2026-11-05 with:
 
 - Text **10.0.0-dev.3**, revision `e3c02e800c15002323124ca118849316416faebb`.
 - Nextcloud **36.0.0-dev**, revision `0a362acfb1a`.
@@ -12,9 +12,13 @@ Validated on 2026-10-30 with:
   normal image installer is bypassed and the mounted server source is version 36.
 
 The Text archive checksum and esbuild version are pinned in `text.lock.json`.
-The server uses the original, unpatched upstream Text sources and compiled assets.
-Only the harness's staged copy receives the native transport adapter and an
-internal component accessor. Production app resources and its Text pin are unchanged.
+The extracted server copy receives a small experimental PHP overlay: an
+authenticated runtime manifest endpoint and a digest check on session requests.
+This is a local upstream proposal, not an available feature of unmodified Text.
+See [the overlay contract](upstream/README.md). The server's compiled editor assets
+are unchanged. The harness's staged copy receives the native transport adapter
+and an internal component accessor. Production app resources and its Text pin
+are unchanged.
 
 ## Start the isolated server
 
@@ -66,6 +70,8 @@ experimental until the upstream embedding contract is implemented.
 The suite checks:
 
 - Native app-password authentication and two independent nonpersistent WKWebViews.
+- An exact authenticated manifest match before creating sessions, and rejection
+  of mismatched runtime digests on open, sync, push and save.
 - No-edit opening/closing preserves exact opaque HTML/comment source and sends
   no file-save request. This does not prove arbitrary unsupported content can
   safely be edited; upstream initialization can still exchange Yjs messages.
@@ -94,7 +100,7 @@ its own session binding and in-memory browser storage.
 
 The experimental adapter uses Text's internal Axios instance, not a supported
 upstream transport API. Its component accessor is pinned to this compiled build.
-Server-runtime export, cross-version compatibility, two different users,
+Server-runtime asset export, cross-version compatibility, two different users,
 cross-account isolation, permission revocation, crash/cold-restart Yjs recovery,
 automatic durable checkpoints for interactive typing, App Store validation, and
 integration with the app's draft queue remain open. The outage test keeps the

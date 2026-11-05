@@ -4,7 +4,30 @@ Implemented on `feat/text-collaboration`, 2026-11-05. This is the first
 implementation batch of the [collaboration plan](text-collaboration.md).
 
 The agreed UI scope is an explicit experimental mode with strict runtime/server
-matching. The compatibility gate must be implemented before enabling that mode.
+matching. The native compatibility gate is implemented; the UI is not enabled.
+
+## Runtime compatibility
+
+`CollectivesClient.verifyTextRuntime(expected:)` fetches the authenticated
+`GET /index.php/apps/text/embedding` manifest with a 16 KiB response cap,
+no-cache request and redirect rejection. It requires an exact match of format,
+Text version, source revision, code digest, session API and update encoding.
+Missing, malformed or incompatible metadata prevents session creation.
+
+Only verification can produce the account-scoped proof required by the public
+`textSession` factory. Every open, sync, push and save carries its verified digest
+natively. The experimental server overlay checks it before processing the
+session request and returns HTTP 412 after a build change. The client then
+requires recovery. Close omits the digest so cleanup remains possible; successful
+cleanup does not establish that unsaved edits reached DAV.
+
+This endpoint and middleware are a local proposal, not an upstream Text feature.
+The build script generates the same manifest for the native bundle and server,
+including hashes of pinned JavaScript/CSS, PHP and app metadata. Deployment must
+activate the code and generated manifest together. Verification trusts that server
+assertion; it does not independently attest every remote asset. A manual change
+to same-version server files without regenerating the manifest cannot be detected.
+No server JavaScript is downloaded or executed by this gate.
 
 ## Native requests
 
@@ -86,17 +109,17 @@ stream limits, cancellation, lost replies, save-version checks, request races,
 stale leases, checkpoint ordering, canonical revision checks, account isolation,
 app sync/source guards, storage failure and stale editor callbacks.
 
-Validation on 2026-11-05: **178 core tests and 59 app tests pass**. The rebuilt
+Validation on 2026-11-05: **182 core tests and 59 app tests pass**. The rebuilt
 native WebKit two-client suite also passes against the pinned Text 10.0.0-dev.3
 and Nextcloud 36-dev fixture, including concurrent Unicode edits, reconnect,
 explicit save/version and DAV verification, session rejection, and no-edit
-source preservation.
+source preservation. It also verifies manifest matching and HTTP 412 rejection
+of incompatible digests on open, sync, push and save.
 
 The native WebKit smoke target now imports the same `CollectivesCore` client used
 by the app boundary. It still uses the spike's internal Axios/component adapter
 on the JavaScript side. Replacing that adapter with a supported Text embedding
-interface, runtime/server compatibility verification, and the actual app UI
-orchestration remain the next parts of milestone 1. The regular rich editor
+interface and the actual app UI orchestration remain the next parts of milestone 1. The regular rich editor
 continues to use its existing offline draft path until those parts are ready.
 
 Ownership and request state are currently in memory. Cold-restart Yjs recovery,

@@ -17,7 +17,7 @@ let package = Package(
         .executableTarget(name: "CollectivesApp", dependencies: ["CollectivesCore"]),
         .executableTarget(name: "TextCollaborationSmoke", dependencies: ["CollectivesCore"],
                           path: "dev/text-collaboration",
-                          exclude: ["README.md", "build.py", "compose.yaml", "run.sh", "runtime.mjs", "text.lock.json"],
+                          exclude: ["README.md", "build.py", "compose.yaml", "run.sh", "runtime.mjs", "text.lock.json", "upstream"],
                           sources: ["Smoke.swift"]),
         .testTarget(name: "CollectivesCoreTests", dependencies: ["CollectivesCore"]),
         .testTarget(name: "CollectivesAppTests", dependencies: ["CollectivesApp"])
