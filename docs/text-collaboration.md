@@ -10,6 +10,10 @@ embedding API and app UI orchestration remain open.
 Goal: integrate live Nextcloud Text collaboration into the native app, preserve
 offline work, and use a compatible editor runtime for each account/server.
 
+Confirmed scope (2026-11-05): expose collaboration as an explicit experimental
+mode, enabled only for a verified Text runtime/server match. Broader version
+support is deferred.
+
 ## Next milestones
 
 ### 1. Define the integration API and integrate the app

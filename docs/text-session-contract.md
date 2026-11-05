@@ -3,6 +3,9 @@
 Implemented on `feat/text-collaboration`, 2026-11-05. This is the first
 implementation batch of the [collaboration plan](text-collaboration.md).
 
+The agreed UI scope is an explicit experimental mode with strict runtime/server
+matching. The compatibility gate must be implemented before enabling that mode.
+
 ## Native requests
 
 `TextSessionClient` binds a native account client, file ID and editor lease UUID
