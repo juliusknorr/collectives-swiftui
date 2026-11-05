@@ -205,4 +205,69 @@ public actor TextSessionClient {
             throw error
         }
     }
+
+    /// Decodes the pinned editor's message body without accepting browser-selected
+    /// URLs, credentials, file IDs, runtime identities or forced saves. The WebKit
+    /// caller must separately validate its WebView and main-frame origin.
+    public func sendBridgeRequest(operation: String, body: Data, leaseID: UUID) async throws -> TextSessionReply {
+        guard leaseID == self.leaseID else { throw TextSessionError.staleLease }
+        guard body.count <= maximumMessageBytes else { throw TextSessionError.messageTooLarge }
+        let input: [String: TextValue]
+        do {
+            guard let object = try JSONDecoder().decode(TextValue.self, from: body).object else {
+                throw TextSessionError.invalidMessage
+            }
+            input = object
+        } catch { throw TextSessionError.invalidMessage }
+        if operation == "create" {
+            guard Set(input.keys).isSubset(of: ["baseVersionEtag"]),
+                  input["baseVersionEtag"] == nil || input["baseVersionEtag"] == .null else {
+                throw TextSessionError.invalidMessage
+            }
+            return try await send(.open, leaseID: leaseID)
+        }
+        let fields: Set<String>
+        switch operation {
+        case "sync": fields = ["version"]
+        case "push": fields = ["version", "steps", "awareness", "recoveryAttempt"]
+        case "save": fields = ["version", "autosaveContent", "documentState", "manualSave", "force"]
+        case "close": fields = []
+        default: throw TextSessionError.invalidMessage
+        }
+        let common: Set<String> = ["documentId", "sessionId", "sessionToken", "baseVersionEtag", "filePath", "token"]
+        guard Set(input.keys).isSubset(of: common.union(fields)),
+              input["token"] == nil || input["token"] == .null,
+              input["filePath"] == nil || input["filePath"] == .null || input["filePath"]?.string != nil else {
+            throw TextSessionError.invalidMessage
+        }
+        guard let documentID, let sessionID,
+              input["documentId"] == .string(documentID), input["sessionId"] == .integer(sessionID),
+              input["sessionToken"] == .string("native-owned"),
+              input["baseVersionEtag"] == nil || input["baseVersionEtag"] == baseVersionEtag.map(TextValue.string) else {
+            throw TextSessionError.staleLease
+        }
+        let command: TextSessionCommand
+        if operation == "close" { command = .close }
+        else {
+            guard let version = input["version"]?.integer else { throw TextSessionError.invalidMessage }
+            switch operation {
+            case "sync": command = .sync(version: version)
+            case "push":
+                guard case .array(let values) = input["steps"], values.allSatisfy({ $0.string != nil }),
+                      let awareness = input["awareness"]?.string,
+                      input["recoveryAttempt"] == nil || input["recoveryAttempt"]?.integer != nil else {
+                    throw TextSessionError.invalidMessage
+                }
+                command = .push(version: version, steps: values.compactMap(\.string), awareness: awareness,
+                                recoveryAttempt: input["recoveryAttempt"]?.integer)
+            case "save":
+                guard let markdown = input["autosaveContent"]?.string, let state = input["documentState"]?.string,
+                      case .bool(let manual) = input["manualSave"],
+                      input["force"] == nil || input["force"] == .bool(false) else { throw TextSessionError.invalidMessage }
+                command = .save(version: version, markdown: markdown, documentState: state, manual: manual)
+            default: throw TextSessionError.invalidMessage
+            }
+        }
+        return try await send(command, leaseID: leaseID)
+    }
 }

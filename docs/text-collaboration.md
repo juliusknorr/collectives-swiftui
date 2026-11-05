@@ -28,8 +28,9 @@ and app ownership rules together, using the proven bundled runtime first.
 - [ ] Define persistence hooks and durable-write acknowledgements, plus explicit
   drain/save/close results. Propose these contracts upstream; no issues or
   comments have been posted as part of this work.
-- [ ] Keep authentication and session credentials in Swift, with a narrow,
-  validated WebKit bridge and bounded requests/responses.
+- [x] Keep authentication and session credentials in Swift, with a shared,
+  validated bridge decoder and bounded requests/responses, exercised by the
+  two-client WebKit harness. App WebView wiring remains part of UI integration.
 - [x] Add native runtime/server verification and per-request digest checks in the
   live harness, using a local experimental server overlay. This is a server build
   assertion requiring atomic code/manifest deployment, not remote asset attestation.

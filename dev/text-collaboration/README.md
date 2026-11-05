@@ -62,7 +62,8 @@ the loopback test endpoint. The harness obtains an app password in native code;
 no real account credentials or Keychain access are needed.
 
 The harness is now a Swift package executable, `TextCollaborationSmoke`, and uses
-the shared `CollectivesCore.TextSessionClient`. SwiftPM resolves the same pinned
+the shared `CollectivesCore.TextSessionClient`, including its bridge decoder
+and document/session validation. SwiftPM resolves the same pinned
 dependencies as the app. The [native session contract](../../docs/text-session-contract.md)
 describes its request limits and lifecycle rules. The JavaScript adapter remains
 experimental until the upstream embedding contract is implemented.

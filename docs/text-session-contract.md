@@ -53,6 +53,21 @@ close replies leave recovery required and are never automatically replayed.
 Authentication/session invalidation responses (401/403/404/412) also require
 recovery; transient push/save failures retain the session for explicit retry.
 
+## Shared bridge decoding
+
+`TextSessionClient.sendBridgeRequest` decodes the pinned editor's JSON body into
+the same typed commands. Both the harness and future app adapter use this path.
+It checks the lease, document/session identity and collaboration base; rejects
+unknown operations/fields, credential or URL overrides, share tokens and forced
+saves; and distinguishes booleans from integers. Real tokens are added only
+natively. Optional browser file paths never determine the native request target.
+
+Creating a session accepts only an absent/null base ETag. Opening cached Yjs
+state against a supplied base is deliberately unavailable until durable recovery
+is implemented. The WebKit host must additionally verify the originating WebView,
+main frame and local page before invoking this API, and retain the existing CSP
+and navigation restrictions. A JSON parser cannot establish frame trust.
+
 ## Request and memory limits
 
 The default encoded request and response limit is **4 MiB**, with at most 256
@@ -109,7 +124,7 @@ stream limits, cancellation, lost replies, save-version checks, request races,
 stale leases, checkpoint ordering, canonical revision checks, account isolation,
 app sync/source guards, storage failure and stale editor callbacks.
 
-Validation on 2026-11-05: **182 core tests and 59 app tests pass**. The rebuilt
+Validation on 2026-11-05: **186 core tests and 59 app tests pass**. The rebuilt
 native WebKit two-client suite also passes against the pinned Text 10.0.0-dev.3
 and Nextcloud 36-dev fixture, including concurrent Unicode edits, reconnect,
 explicit save/version and DAV verification, session rejection, and no-edit

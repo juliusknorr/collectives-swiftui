@@ -30,6 +30,8 @@ final class Server {
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil
         config.urlCredentialStorage = nil
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.timeoutIntervalForRequest = 15
         return URLSession(configuration: config, delegate: redirects, delegateQueue: nil)
     }()
@@ -113,8 +115,6 @@ final class Peer: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageHand
     var failure: String?
     var counts: [String: Int] = [:]
     var rejectedStatuses: [Int] = []
-    private var documentID: String?
-    private var sessionID: Int?
     private var baseVersionEtag: String?
     private let native: TextSessionClient
     private let fixture: NativeRequestFixture
@@ -167,38 +167,16 @@ final class Peer: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageHand
         counts[operation, default: 0] += 1
         if offline { return ["status": 503, "data": [:]] }
         if holdSaves && operation == "save" { return ["status": 503, "data": [:]] }
-        let command: TextSessionCommand
-        if operation == "create" {
-            command = .open
-        } else {
-            guard let documentID, let sessionID,
-                  input["documentId"] as? String == documentID,
-                  input["sessionId"] as? Int == sessionID,
-                  input["sessionToken"] as? String == "native-owned"
-            else { return ["status": 403, "data": [:]] }
-            if operation == "close" { command = .close }
-            else {
-                guard let version = input["version"] as? Int else { return ["status": 400, "data": [:]] }
-                switch operation {
-                case "sync": command = .sync(version: version)
-                case "push":
-                    guard let steps = input["steps"] as? [String], let awareness = input["awareness"] as? String else { return ["status": 400, "data": [:]] }
-                    command = .push(version: version, steps: steps, awareness: awareness, recoveryAttempt: input["recoveryAttempt"] as? Int)
-                case "save":
-                    guard let markdown = input["autosaveContent"] as? String, let state = input["documentState"] as? String,
-                          let manual = input["manualSave"] as? Bool else { return ["status": 400, "data": [:]] }
-                    command = .save(version: version, markdown: markdown, documentState: state, manual: manual)
-                default: return ["status": 400, "data": [:]]
-                }
-            }
-        }
         let reply: TextSessionReply
-        do { reply = try await native.send(command, leaseID: native.leaseID) }
-        catch TextSessionError.http(let status) {
+        do {
+            let body = try JSONSerialization.data(withJSONObject: input)
+            reply = try await native.sendBridgeRequest(operation: operation, body: body, leaseID: native.leaseID)
+        } catch TextSessionError.http(let status) {
             rejectedStatuses.append(status)
             return ["status": status, "data": [:]]
         } catch TextSessionError.invalidState { return ["status": 409, "data": [:]] }
         catch TextSessionError.staleLease { return ["status": 403, "data": [:]] }
+        catch TextSessionError.invalidMessage { return ["status": 400, "data": [:]] }
         let encoded = try JSONEncoder().encode(reply.payload)
         let decoded = try JSONSerialization.jsonObject(with: encoded)
         let result = decoded as? [String: Any] ?? [:]
@@ -208,9 +186,9 @@ final class Peer: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageHand
                   !id.contains("/"), !id.contains("\\"), id != ".", id != "..",
                   let base = doc["baseVersionEtag"] as? String,
                   let session = result["session"] as? [String: Any],
-                  let sid = session["id"] as? Int
+                  session["id"] as? Int != nil
             else { throw SpikeError.failed("Unexpected Text 10 session response") }
-            documentID = id; sessionID = sid; baseVersionEtag = base
+            baseVersionEtag = base
         }
         return ["status": 200, "data": decoded]
     }
@@ -422,12 +400,15 @@ final class Smoke {
             && states.allSatisfy { $0["pending"] as? Bool == false }
     }
 
-    func cleanup() async {
+    func cleanup() async throws {
         for peer in peers + (probe.map { [$0] } ?? []) {
             try? await peer.checkpoint()
             _ = try? await peer.js("return await window.spike.close()")
         }
-        for fixture in fixtures { _ = try? await server.request("DELETE", fixture) }
+        for fixture in fixtures {
+            let (_, response) = try await server.request("DELETE", fixture)
+            try require([204, 404].contains(response.statusCode), "Fixture cleanup failed (HTTP \(response.statusCode))")
+        }
     }
 }
 
@@ -446,12 +427,12 @@ Task { @MainActor in
         let smoke = try Smoke()
         do {
             try await smoke.run()
-            await smoke.cleanup()
+            try await smoke.cleanup()
             print("PASS: Native Text collaboration spike")
             exit(0)
         } catch {
             print("FAIL: \(error)")
-            await smoke.cleanup()
+            try? await smoke.cleanup()
             exit(1)
         }
     } catch { print("FAIL: \(error)"); exit(1) }
