@@ -249,6 +249,10 @@ final class AppModel {
     }
     private func claimEditor() -> Bool {
         guard let accountID = activeID, let pageID = selectedPage?.id else { return false }
+        guard session.textCollaboration.lease(for: .init(accountID: accountID, pageID: pageID)) == nil else {
+            message = "Finish or recover the collaborative session before editing this page."
+            return false
+        }
         guard !editingInAnotherWindow else {
             message = "This page is being edited in another window. Switch that window to View to edit here."
             return false
@@ -259,6 +263,7 @@ final class AppModel {
     private func releaseEditor() {
         session.editorOwners = session.editorOwners.filter { $0.value != windowID }
     }
+    func invalidateSourceEditorCallbacks() { sourceEditorGeneration = UUID() }
     func refreshSharedSelection() {
         reconcileSelection()
         if activeID.map({ id in !accounts.contains(where: { $0.id == id }) }) == true {
@@ -620,6 +625,22 @@ final class AppModel {
               let page = selectedPage, let document else { return }
         textSession = session
         saveEdited(markdown, page: page, document: document)
+    }
+    func completeCollaborationHandoff(_ lease: TextDocumentOwnership.Lease, canonical: RemoteDocument, expectedMarkdown: String) async throws {
+        guard lease.windowID == windowID, accounts.contains(where: { $0.id == lease.key.accountID }),
+              var document = session.snapshots[lease.key.accountID]?.documents[String(lease.key.pageID)],
+              !document.hasLocalChanges else { throw TextSessionError.invalidState }
+        // Validate the whole acknowledgement before committing the refreshed base.
+        var ownership = session.textCollaboration
+        try ownership.completeHandoff(lease, canonical: canonical, expectedMarkdown: expectedMarkdown)
+        document.markdown = canonical.markdown
+        document.etag = canonical.etag
+        try await store.saveDocument(document, accountID: lease.key.accountID)
+        try Task.checkCancellation()
+        try session.textCollaboration.completeHandoff(lease, canonical: canonical, expectedMarkdown: expectedMarkdown)
+        session.snapshots[lease.key.accountID]?.documents[String(lease.key.pageID)] = document
+        invalidateSourceEditorCallbacks()
+        session.refreshWindows(accountID: lease.key.accountID)
     }
     func finishTextEditing(retainingContent: Bool = false) async {
         defer { releaseEditor() }
@@ -1017,6 +1038,7 @@ final class AppModel {
         return String(decoding: try encoder.encode(saved), as: UTF8.self)
     }
     func removeAccount(_ id: UUID) async throws {
+        guard !session.textCollaboration.hasLease(accountID: id) else { throw TextSessionError.invalidState }
         guard !richTextInAnotherWindow, !busy, accounts.contains(where: { $0.id == id }) else { throw CollectivesError.invalidResponse }
         busy = true
         defer { busy = false; resumeTextEditing() }

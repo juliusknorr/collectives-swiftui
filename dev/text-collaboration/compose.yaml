@@ -1,0 +1,14 @@
+name: collectives-text-spike
+services:
+  nextcloud:
+    image: nextcloud:33.0.10-apache
+    entrypoint: apache2-foreground
+    ports:
+      - "127.0.0.1:${TEXT_SPIKE_PORT:-18081}:80"
+    volumes:
+      - ${TEXT_SPIKE_SERVER_ROOT:?Set the clean Nextcloud 36 worktree}:/var/www/html
+      - ${TEXT_SPIKE_THIRDPARTY_ROOT:?Set matching Nextcloud 3rdparty sources}:/var/www/html/3rdparty:ro
+      - ${TEXT_SPIKE_TEXT_ROOT:?Set pinned Text sources}:/var/www/html/apps/text:ro
+    mem_limit: 1536m
+    cpus: 2
+    pids_limit: 256

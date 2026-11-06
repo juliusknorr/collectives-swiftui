@@ -1,0 +1,10 @@
+{
+  "project": "Nextcloud Text",
+  "revision": "e0c48942223e11b498f68fb6500ae14fbdfd43e5",
+  "archive_sha256": "8edbae3a52b26379e77f5f13f30be45afc0fa080f94602593707799a6f27d61e",
+  "version": "10.0.0-dev.3",
+  "bundler": "esbuild@0.25.12",
+  "repository": "nextcloud/text",
+  "branch": "feat/text-collaboration",
+  "upstream_revision": "e3c02e800c15002323124ca118849316416faebb"
+}

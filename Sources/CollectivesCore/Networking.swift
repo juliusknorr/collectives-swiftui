@@ -2,6 +2,14 @@ import Foundation
 
 public protocol HTTPTransport: Sendable {
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse)
+    func send(_ request: URLRequest, maximumResponseBytes: Int) async throws -> (Data, HTTPURLResponse)
+}
+extension HTTPTransport {
+    public func send(_ request: URLRequest, maximumResponseBytes: Int) async throws -> (Data, HTTPURLResponse) {
+        let result = try await send(request)
+        guard result.0.count <= maximumResponseBytes else { throw TextSessionError.messageTooLarge }
+        return result
+    }
 }
 /// Redirects are rejected, including same-host redirects, to avoid credential forwarding.
 private final class RejectRedirects: NSObject, URLSessionTaskDelegate, Sendable {
@@ -12,6 +20,7 @@ private final class RejectRedirects: NSObject, URLSessionTaskDelegate, Sendable 
 }
 public struct URLSessionTransport: HTTPTransport {
     private let session: URLSession
+    private let bounded = BoundedHTTPTransport()
     public init() {
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil
@@ -24,6 +33,9 @@ public struct URLSessionTransport: HTTPTransport {
         let (data, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse else { throw CollectivesError.invalidResponse }
         return (data, response)
+    }
+    public func send(_ request: URLRequest, maximumResponseBytes: Int) async throws -> (Data, HTTPURLResponse) {
+        try await bounded.send(request, maximumResponseBytes: maximumResponseBytes)
     }
 }
 public enum ServerAddress {
@@ -125,6 +137,28 @@ public struct CollectivesClient: Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Collectives Apple/0.1", forHTTPHeaderField: "User-Agent")
         return request
+    }
+    func sendTextSession(path: [String], method: String, body: Data, maximumResponseBytes: Int) async throws -> Data {
+        var outgoing = try request(["index.php", "apps", "text", "session"] + path)
+        outgoing.httpMethod = method
+        outgoing.httpBody = body
+        outgoing.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        outgoing.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
+        let (data, response) = try await transport.send(outgoing, maximumResponseBytes: maximumResponseBytes)
+        guard response.url == outgoing.url else { throw CollectivesError.unsafeURL }
+        guard response.statusCode == 200 else { throw TextSessionError.http(response.statusCode) }
+        guard data.count <= maximumResponseBytes else { throw TextSessionError.messageTooLarge }
+        return data
+    }
+    func textRuntimeManifest() async throws -> Data {
+        var outgoing = try request(["index.php", "apps", "text", "embedding"])
+        outgoing.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
+        outgoing.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        let (data, response) = try await transport.send(outgoing, maximumResponseBytes: 16 * 1_024)
+        guard response.url == outgoing.url else { throw CollectivesError.unsafeURL }
+        if [404, 503].contains(response.statusCode) { throw TextRuntimeError.unavailable }
+        guard response.statusCode == 200 else { throw TextSessionError.http(response.statusCode) }
+        return data
     }
     func ocs<T: Decodable>(_ type: T.Type, path: [String], method: String = "GET", body: Data? = nil) async throws -> T {
         var outgoing = try request(path)

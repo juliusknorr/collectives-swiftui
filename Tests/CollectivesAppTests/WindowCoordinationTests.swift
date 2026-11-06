@@ -114,6 +114,80 @@ func richEditorInAnotherWindowBlocksNativeSync() async throws {
 }
 
 @MainActor @Test
+func collaborativeLeaseBlocksSourceEditsSyncAndAccountRemovalUntilHandoff() async throws {
+    let f = try await WindowFixture()
+    defer { f.cleanup() }
+    await f.first.changePageMode(.edit)
+    let oldGeneration = f.first.sourceEditorGeneration
+    let lease = try f.first.session.beginTextCollaboration(accountID: f.account.id, pageID: 1, windowID: f.first.windowID)
+    try f.first.session.textCollaboration.opened(lease)
+    #expect(f.first.session.hasRichTextEditor)
+    #expect(f.second.editingInAnotherWindow)
+    f.first.edited("stale native write")
+    #expect(f.first.document?.draft == nil)
+    #expect(await f.second.syncAccounts() == false)
+    await #expect(throws: TextSessionError.invalidState) { try await f.first.removeAccount(f.account.id) }
+    try f.first.session.textCollaboration.edited(lease, revision: 1)
+    try f.first.session.textCollaboration.checkpointed(lease, revision: 1)
+    try f.first.session.textCollaboration.beginHandoff(lease, requiredVersion: 2)
+    try f.first.session.textCollaboration.saved(lease, version: 2)
+    try f.first.session.textCollaboration.closed(lease)
+    try await f.first.completeCollaborationHandoff(lease, canonical: .init(markdown: "collaborative content", etag: "\"canonical\""),
+                                                 expectedMarkdown: "collaborative content")
+    #expect(!f.first.session.hasRichTextEditor)
+    #expect(f.first.text == "collaborative content")
+    #expect(f.second.text == "collaborative content")
+    #expect(f.first.document?.etag == "\"canonical\"")
+    let stored = try await f.store.snapshot(accountID: f.account.id)
+    #expect(stored.documents["1"]?.markdown == "collaborative content")
+    f.first.edited("late pre-session callback", accountID: f.account.id, pageID: 1, editorGeneration: oldGeneration)
+    #expect(f.first.document?.draft == nil)
+    #expect(f.first.text == "collaborative content")
+}
+
+@MainActor @Test
+func collaborativeLeaseRejectsUnflushedDraftsAndRetainsFailedStorageHandoff() async throws {
+    let f = try await WindowFixture()
+    defer { f.cleanup() }
+    await f.first.changePageMode(.edit)
+    f.first.edited("native draft")
+    await f.first.pendingPersistence?.value
+    #expect(throws: TextSessionError.invalidState) {
+        try f.first.session.beginTextCollaboration(accountID: f.account.id, pageID: 1, windowID: f.first.windowID)
+    }
+    f.first.edited("base 1")
+    await f.first.pendingPersistence?.value
+    let lease = try f.first.session.beginTextCollaboration(accountID: f.account.id, pageID: 1, windowID: f.first.windowID)
+    try f.first.session.textCollaboration.opened(lease)
+    try f.first.session.textCollaboration.beginHandoff(lease, requiredVersion: 0)
+    try f.first.session.textCollaboration.closed(lease)
+    try FileManager.default.removeItem(at: f.root)
+    try Data("blocked storage".utf8).write(to: f.root)
+    await #expect(throws: (any Error).self) {
+        try await f.first.completeCollaborationHandoff(lease, canonical: .init(markdown: "server", etag: "\"server\""), expectedMarkdown: "server")
+    }
+    #expect(f.first.session.hasRichTextEditor)
+    #expect(f.first.session.textCollaboration.lease(for: lease.key) == lease)
+    #expect(f.first.document?.markdown == "base 1")
+    #expect(await f.second.syncAccounts() == false)
+}
+
+@MainActor @Test
+func collaborativeOwnershipSurvivesOriginatingWindowDisappearance() async throws {
+    let f = try await WindowFixture()
+    defer { f.cleanup() }
+    let lease = try f.first.session.beginTextCollaboration(accountID: f.account.id, pageID: 1, windowID: f.first.windowID)
+    try f.first.session.textCollaboration.requireRecovery(lease)
+    f.first.session.windows.removeAll { $0.value?.windowID == f.first.windowID }
+    #expect(f.second.editingInAnotherWindow)
+    #expect(await f.second.syncAccounts() == false)
+    await f.second.changePageMode(.edit)
+    f.second.edited("write after window disappeared")
+    #expect(f.second.document?.draft == nil)
+    #expect(f.first.session.textCollaboration.lease(for: lease.key) == lease)
+}
+
+@MainActor @Test
 func openingAnotherWindowUsesCurrentUnsavedSnapshot() async throws {
     let f = try await WindowFixture()
     defer { f.cleanup() }
