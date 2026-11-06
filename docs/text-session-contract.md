@@ -143,7 +143,9 @@ continues to use its existing offline draft path until those parts are ready.
 
 Ownership and request state are currently in memory. Cold-restart Yjs recovery,
 durable per-edit checkpoints and restoring pending ownership after a process
-restart belong to milestone 2. No upstream issue, comment or PR has been posted.
+restart belong to milestone 2. Draft implementation PRs are open for
+[Text](https://github.com/nextcloud/text/pull/9558) and the
+[native app](https://github.com/juliusknorr/collectives-swiftui/pull/2).
 
 The repository split is covered by five Python harness-build tests, four Text
 manifest-generator tests and six PHP manifest tests. The harness's experimental

@@ -2,6 +2,9 @@
 
 Updated: 2026-11-06. Plan branch: `plan/text-collaboration`.
 
+Draft implementation PRs: [Text](https://github.com/nextcloud/text/pull/9558) and
+[native app](https://github.com/juliusknorr/collectives-swiftui/pull/2).
+
 Implementation is underway on `feat/text-collaboration`. The first batch adds
 the [native session boundary and app ownership rules](text-session-contract.md),
 with regression tests and reuse by the live WebKit harness. A second batch adds
