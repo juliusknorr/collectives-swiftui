@@ -1,0 +1,14 @@
+/* SPDX-FileCopyrightText: 2026 Nextcloud contributors */
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+:root { --color-main-background: #fff; --color-main-text: #202428; --color-primary: #00679e; --color-primary-element: #00679e; --color-primary-element-text: #fff; --color-background-hover: #eef3f6; --color-border: #d5dce1; --color-border-maxcontrast: #8c969e; --border-radius: 8px; --border-radius-large: 12px; --default-clickable-area: 44px; --default-font-size: 15px; font: 15px/1.5 system-ui, sans-serif; color: var(--color-main-text); background: #f3f6f8; }
+body { margin: 0; }
+header { max-width: 960px; margin: 24px auto; padding: 0 24px; }
+h1 { margin: 0; font-size: 26px; }
+a { color: #00679e; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; }
+button { padding: 10px 16px; border: 1px solid #bccbd5; border-radius: 8px; background: white; cursor: pointer; font: inherit; }
+button:disabled { opacity: .5; cursor: default; }
+#editor { position: relative; max-width: 1000px; min-height: 380px; margin: 16px auto; background: white; border: 1px solid #d5dce1; border-radius: 12px; overflow: hidden; }
+#editor .ProseMirror { min-height: 200px; }
+pre { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; background: white; padding: 12px; }
+.hint { color: #596671; font-size: 13px; }

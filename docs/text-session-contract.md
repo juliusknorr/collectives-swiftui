@@ -151,9 +151,9 @@ The repository split is covered by five Python harness-build tests, four Text
 manifest-generator tests and six PHP manifest tests. The harness's experimental
 JavaScript staging adjustments remain until the embedding API work replaces them.
 
-Text's draft PR now implements a public per-instance transport, `exportState`,
-and `finishSession(checkpointWriter)` with host persistence acknowledgements. Its
-Playwright fixture tests the API and serves as a runnable two-client demo. The
-native harness remains on its earlier pinned Text commit and internal JavaScript
-adapter until we rebuild the bundle and migrate its bridge. These Text-side
-tests do not replace Swift/WebKit integration coverage.
+Text's draft PR now contains a small per-instance transport, `exportState()` and
+`drain()`, with one focused Playwright test. Checkpoint storage and confirmed
+save/close orchestration are implemented in the native host/demo tooling rather
+than Text. The Swift harness remains on its earlier pinned runtime and internal
+adapter until we rebuild the bundle and migrate its bridge. Text-side tests do
+not replace Swift/WebKit integration coverage.

@@ -117,3 +117,10 @@ To stop this server, use the same environment variables above:
 ```sh
 docker compose -f dev/text-collaboration/compose.yaml down
 ```
+
+## Small public embedding seam
+
+The [app-owned browser demo](embedding/README.md) uses Text's public transport,
+Yjs export and drain methods. It owns checkpoint storage and save/close
+orchestration outside Text. The Swift harness above remains on its earlier
+pinned bundle until its bridge migrates to that seam.

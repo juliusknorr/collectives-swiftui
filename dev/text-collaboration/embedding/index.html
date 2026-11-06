@@ -1,0 +1,30 @@
+<!--
+SPDX-FileCopyrightText: 2026 Nextcloud contributors
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+<!doctype html>
+<html lang="en" data-theme-light>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Text embedding demo</title>
+  <link rel="stylesheet" href="/dev/text-collaboration/embedding/style.css">
+</head>
+<body>
+  <header>
+    <h1>Text embedding</h1>
+    <p>Two clients share a real Text session. The local host owns authentication and HTTP requests.</p>
+    <p><a href="?peer=A" target="_blank">Open client A</a> · <a href="?peer=B" target="_blank">Open client B</a></p>
+    <div class="controls">
+      <button id="connection" disabled>Disconnect</button>
+      <button id="export" disabled>Export Yjs state</button>
+      <button id="finish" disabled>Save and close</button>
+    </div>
+    <p id="status" role="status">Joining…</p>
+    <details><summary>Exported checkpoint</summary><pre id="checkpoint">No checkpoint exported.</pre></details>
+    <p class="hint">Reconnect keeps the current Y.Doc alive. Restoring after a restart is not implemented.</p>
+  </header>
+  <main id="editor" aria-label="Collaborative Text editor"></main>
+  <script type="module" src="/dev/text-collaboration/embedding/page.ts"></script>
+</body>
+</html>
