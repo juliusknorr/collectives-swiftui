@@ -1,12 +1,14 @@
 # Text collaboration plan
 
-Updated: 2026-11-05. Plan branch: `plan/text-collaboration`.
+Updated: 2026-11-06. Plan branch: `plan/text-collaboration`.
 
 Implementation is underway on `feat/text-collaboration`. The first batch adds
 the [native session boundary and app ownership rules](text-session-contract.md),
 with regression tests and reuse by the live WebKit harness. A second batch adds
 an authenticated runtime manifest, account-scoped verification and per-request
-digest checks through a local experimental server overlay. The JavaScript
+digest checks. The server implementation, generator and tests now live in a
+[matching Text branch](https://github.com/nextcloud/text/tree/feat/text-collaboration);
+the app consumes a pinned Text commit without PHP patches. The JavaScript
 embedding API and app UI orchestration remain open.
 
 Goal: integrate live Nextcloud Text collaboration into the native app, preserve
@@ -32,7 +34,7 @@ and app ownership rules together, using the proven bundled runtime first.
   validated bridge decoder and bounded requests/responses, exercised by the
   two-client WebKit harness. App WebView wiring remains part of UI integration.
 - [x] Add native runtime/server verification and per-request digest checks in the
-  live harness, using a local experimental server overlay. This is a server build
+  live harness, using the paired experimental Text branch. This is a server build
   assertion requiring atomic code/manifest deployment, not remote asset attestation.
 - [ ] Wire the compatibility gate into the experimental UI. Retain native Markdown
   source editing where a compatible collaboration runtime is unavailable.

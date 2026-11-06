@@ -16,13 +16,17 @@ Missing, malformed or incompatible metadata prevents session creation.
 
 Only verification can produce the account-scoped proof required by the public
 `textSession` factory. Every open, sync, push and save carries its verified digest
-natively. The experimental server overlay checks it before processing the
+natively. The experimental Text branch checks it before processing the
 session request and returns HTTP 412 after a build change. The client then
 requires recovery. Close omits the digest so cleanup remains possible; successful
 cleanup does not establish that unsaved edits reached DAV.
 
-This endpoint and middleware are a local proposal, not an upstream Text feature.
-The build script generates the same manifest for the native bundle and server,
+The endpoint, middleware, manifest generator and PHP tests are maintained in
+Text's [feat/text-collaboration branch](https://github.com/nextcloud/text/tree/feat/text-collaboration),
+based on the pinned upstream revision.
+They are not merged into upstream main. The app pins the Text commit and archive
+checksum rather than applying PHP patches. Text's own build tool generates the
+same manifest for the native bundle and server,
 including hashes of pinned JavaScript/CSS, PHP and app metadata. Deployment must
 activate the code and generated manifest together. Verification trusts that server
 assertion; it does not independently attest every remote asset. A manual change
@@ -124,7 +128,7 @@ stream limits, cancellation, lost replies, save-version checks, request races,
 stale leases, checkpoint ordering, canonical revision checks, account isolation,
 app sync/source guards, storage failure and stale editor callbacks.
 
-Validation on 2026-11-05: **186 core tests and 59 app tests pass**. The rebuilt
+Validation on 2026-11-06: **186 core tests and 59 app tests pass**. The rebuilt
 native WebKit two-client suite also passes against the pinned Text 10.0.0-dev.3
 and Nextcloud 36-dev fixture, including concurrent Unicode edits, reconnect,
 explicit save/version and DAV verification, session rejection, and no-edit
@@ -140,3 +144,7 @@ continues to use its existing offline draft path until those parts are ready.
 Ownership and request state are currently in memory. Cold-restart Yjs recovery,
 durable per-edit checkpoints and restoring pending ownership after a process
 restart belong to milestone 2. No upstream issue, comment or PR has been posted.
+
+The repository split is covered by five Python harness-build tests, four Text
+manifest-generator tests and six PHP manifest tests. The harness's experimental
+JavaScript staging adjustments remain until the embedding API work replaces them.

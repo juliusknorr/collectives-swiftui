@@ -6,65 +6,52 @@ from pathlib import Path
 import shutil
 import subprocess
 import tarfile
+import tempfile
+import urllib.request
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 BUILD = ROOT / '.build/text-collaboration'
 
 
-def install_server_contract(source, archive, lock):
-    # Always restore these pinned files before applying the repeatable overlay.
-    with tarfile.open(archive) as tar:
-        prefix = 'text-' + lock['revision'] + '/'
-        for name in ['appinfo/routes.php', 'lib/Controller/SessionController.php', 'lib/Middleware/SessionMiddleware.php',
-                     'composer/composer/autoload_classmap.php', 'composer/composer/autoload_static.php']:
-            target = source / name
-            with tar.extractfile(prefix + name) as contents:
-                target.write_bytes(contents.read())
-    for name, folder in [('RuntimeManifest.php', 'Service'), ('EmbeddingController.php', 'Controller')]:
-        shutil.copyfile(HERE / 'upstream' / name, source / 'lib' / folder / name)
-    routes = source / 'appinfo/routes.php'
-    routes.write_text(routes.read_text().replace("'routes' => [", "'routes' => [\n\t\t['name' => 'Embedding#get', 'url' => '/embedding', 'verb' => 'GET'],", 1))
-    middleware = source / 'lib/Middleware/SessionMiddleware.php'
-    original = '\t\t$reflectionMethod = new \\ReflectionMethod($controller, $methodName);'
-    replacement = '''\t\t$runtimeDigest = $this->request->getParam('runtimeDigest');
-\t\tif ($runtimeDigest !== null && $methodName !== 'close'
-\t\t\t&& (!is_string($runtimeDigest) || !(new \\OCA\\Text\\Service\\RuntimeManifest())->matches($runtimeDigest))) {
-\t\t\tthrow new InvalidDocumentBaseVersionEtagException();
-\t\t}
+def ensure_archive(archive, lock):
+    def checksum(path):
+        digest = hashlib.sha256()
+        with path.open('rb') as contents:
+            for chunk in iter(lambda: contents.read(1024 * 1024), b''):
+                digest.update(chunk)
+        return digest.hexdigest()
+    if archive.exists() and checksum(archive) == lock['archive_sha256']:
+        return
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    url = 'https://codeload.github.com/' + lock['repository'] + '/tar.gz/' + lock['revision']
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=archive.parent, delete=False) as output:
+            temporary = Path(output.name)
+            with urllib.request.urlopen(url, timeout=120) as response:
+                shutil.copyfileobj(response, output)
+        if checksum(temporary) != lock['archive_sha256']:
+            raise SystemExit('Text archive checksum mismatch')
+        temporary.replace(archive)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
-''' + original
-    text = middleware.read_text()
-    if text.count(original) != 1:
-        raise SystemExit('Pinned middleware changed; review runtime gate')
-    middleware.write_text(text.replace(original, replacement))
-    # Text ships an authoritative Composer map for its production PHP classes.
-    for name in ['autoload_classmap.php', 'autoload_static.php']:
-        path = source / 'composer/composer' / name
-        text = path.read_text()
-        anchor = next(line for line in text.splitlines() if "OCA\\\\Text\\\\Controller\\\\SessionController'" in line)
-        additions = []
-        for cls, relative in [('Controller\\\\EmbeddingController', 'Controller/EmbeddingController'),
-                              ('Service\\\\RuntimeManifest', 'Service/RuntimeManifest')]:
-            additions.append(anchor.replace('Controller\\\\SessionController', cls).replace('Controller/SessionController', relative))
-        path.write_text(text.replace(anchor, anchor + '\n' + '\n'.join(additions)))
-    fingerprints = {}
-    for folder in ['js', 'css', 'lib', 'appinfo', 'composer/composer']:
-        for file in sorted((source / folder).rglob('*')):
-            if file.is_file() and file.suffix in ['.mjs', '.css', '.php', '.xml']:
-                fingerprints[str(file.relative_to(source))] = hashlib.sha256(file.read_bytes()).hexdigest()
-    manifest = dict(format=1, textVersion=lock['version'], sourceRevision=lock['revision'],
-                    codeDigest=hashlib.sha256(json.dumps(fingerprints, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
-                    sessionAPI='context-v1', updateEncoding='yjs-sync-v1')
-    (source / 'js/native-embedding.json').write_text(json.dumps(manifest, indent=2) + '\n')
+
+def server_manifest(source, lock):
+    subprocess.run(['python3', str(source / 'tools/native-embedding.py'),
+                    '--source-revision', lock['revision']], check=True)
+    manifest = json.loads((source / 'js/native-embedding.json').read_text())
+    if manifest['sourceRevision'] != lock['revision'] or manifest['textVersion'] != lock['version']:
+        raise SystemExit('Pinned Text source does not match its runtime manifest')
     return manifest
 
 
 def main():
     lock = json.loads((HERE / 'text.lock.json').read_text())
     archive = BUILD / 'text.tar.gz'
-    if hashlib.sha256(archive.read_bytes()).hexdigest() != lock['archive_sha256']:
-        raise SystemExit('Text archive checksum mismatch')
+    ensure_archive(archive, lock)
     upstream = BUILD / 'upstream'
     source = upstream / ('text-' + lock['revision'])
     if not source.exists():
@@ -77,7 +64,7 @@ def main():
                     tar.extract(member, upstream)
                 else:
                     raise SystemExit('Unexpected archive member')
-    manifest = install_server_contract(source, archive, lock)
+    manifest = server_manifest(source, lock)
     stage = BUILD / 'staged'
     shutil.copytree(source / 'js', stage / 'js', dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns('*.map'))

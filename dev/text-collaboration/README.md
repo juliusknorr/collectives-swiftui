@@ -3,22 +3,28 @@
 This standalone macOS WebKit harness proves two-client collaboration against a
 real Text server. It is separate from the app's existing offline rich editor.
 
-Validated on 2026-11-05 with:
+Validated on 2026-11-06 with:
 
-- Text **10.0.0-dev.3**, revision `e3c02e800c15002323124ca118849316416faebb`.
+- Text **10.0.0-dev.3**, collaboration branch commit
+  `e0c48942223e11b498f68fb6500ae14fbdfd43e5`, based on upstream `e3c02e8`.
 - Nextcloud **36.0.0-dev**, revision `0a362acfb1a`.
 - Matching Nextcloud 3rdparty revision `9a181f79a2ad8fa3be4b24a6bfbc0af57ed51e49`.
 - The existing `nextcloud:33.0.10-apache` image supplies PHP/Apache only; its
   normal image installer is bypassed and the mounted server source is version 36.
 
 The Text archive checksum and esbuild version are pinned in `text.lock.json`.
-The extracted server copy receives a small experimental PHP overlay: an
-authenticated runtime manifest endpoint and a digest check on session requests.
-This is a local upstream proposal, not an available feature of unmodified Text.
-See [the overlay contract](upstream/README.md). The server's compiled editor assets
-are unchanged. The harness's staged copy receives the native transport adapter
-and an internal component accessor. Production app resources and its Text pin
-are unchanged.
+The PHP compatibility implementation, manifest generator and tests are maintained
+in Text on `feat/text-collaboration`. The paired branch is
+[`nextcloud/text`](https://github.com/nextcloud/text/tree/feat/text-collaboration).
+`text.lock.json` pins the repository, exact commit and archive checksum. The app
+build consumes that source and invokes Text's own `tools/native-embedding.py`;
+it does not copy PHP templates or rewrite server routes, middleware or autoloaders.
+The contract and its tests live in Text's `docs/native-embedding.md`.
+
+The harness still stages two experimental JavaScript adjustments: local-file CSS
+preloading and its internal component accessor. Its native transport adapter also
+remains a harness shim until the supported Text embedding API is implemented.
+The server's compiled editor assets and the production app's editor pin are unchanged.
 
 ## Start the isolated server
 
@@ -29,15 +35,11 @@ The following paths are examples matching this development session:
 git -C ~/repos/nextcloud/server worktree add --detach \
   /private/tmp/collectives-text-collaboration-server 0a362acfb1a
 
-mkdir -p .build/text-collaboration
-curl --fail --location \
-  https://codeload.github.com/nextcloud/text/tar.gz/e3c02e800c15002323124ca118849316416faebb \
-  --output .build/text-collaboration/text.tar.gz
 python3 dev/text-collaboration/build.py
 
 export TEXT_SPIKE_SERVER_ROOT=/private/tmp/collectives-text-collaboration-server
 export TEXT_SPIKE_THIRDPARTY_ROOT=$HOME/repos/nextcloud/server/3rdparty
-export TEXT_SPIKE_TEXT_ROOT=$PWD/.build/text-collaboration/upstream/text-e3c02e800c15002323124ca118849316416faebb
+export TEXT_SPIKE_TEXT_ROOT=$PWD/.build/text-collaboration/upstream/text-e0c48942223e11b498f68fb6500ae14fbdfd43e5
 docker compose -f dev/text-collaboration/compose.yaml up -d --pull never
 docker exec --user www-data collectives-text-spike-nextcloud-1 php occ maintenance:install \
   --database sqlite --database-name text-spike --admin-user spike \

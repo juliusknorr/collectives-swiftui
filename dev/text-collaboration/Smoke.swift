@@ -24,6 +24,7 @@ final class Server {
     let user: String
     let account: Account
     private var verifiedRuntime: VerifiedTextRuntime?
+    var runtimeManifest: TextRuntimeManifest? { verifiedRuntime?.manifest }
     private var password: String
     private let redirects = NoRedirects()
     private lazy var session: URLSession = {
@@ -205,7 +206,7 @@ final class Peer: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageHand
             throw SpikeError.failed("Could not checkpoint \(name)")
         }
         let data: [String: Any] = ["server": server.base.absoluteString, "user": server.user,
-            "fileID": fileID, "baseVersionEtag": baseVersionEtag ?? "", "textRevision": "e3c02e800c15002323124ca118849316416faebb",
+            "fileID": fileID, "baseVersionEtag": baseVersionEtag ?? "", "textRevision": server.runtimeManifest?.sourceRevision ?? "unverified",
             "snapshot": snapshot]
         try JSONSerialization.data(withJSONObject: data).write(to: recovery, options: .atomic)
     }
@@ -388,7 +389,7 @@ final class Smoke {
             headers: ["If-Match": response.value(forHTTPHeaderField: "ETag")!, "Content-Type": "text/markdown"])
         try require([200, 204].contains(sourceWrite.statusCode), "Conditional DAV handoff failed (HTTP \(sourceWrite.statusCode))")
         print("PASS: Session close followed by conditional DAV handoff")
-        let report: [String: Any] = ["textRevision": "e3c02e800c15002323124ca118849316416faebb", "textVersion": "10.0.0-dev.3",
+        let report: [String: Any] = ["textRevision": server.runtimeManifest?.sourceRevision ?? "unverified", "textVersion": server.runtimeManifest?.textVersion ?? "unverified",
             "server": "Nextcloud 36-dev", "passed": true, "nativeRequests": peers.map { ["peer": $0.name, "counts": $0.counts] }]
         try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("result.json"), options: .atomic)
     }
