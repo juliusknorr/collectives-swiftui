@@ -14,6 +14,13 @@ digest checks. The server implementation, generator and tests now live in a
 the app consumes a pinned Text commit without PHP patches. The JavaScript
 embedding API and app UI orchestration remain open.
 
+Text now exposes a per-editor transport, credential-free Yjs state export and an
+acknowledged checkpoint/drain/save/close API. Its shared Playwright fixture doubles
+as a runnable demo. Two-client joining, concurrent edits, same-Y.Doc reconnect,
+checkpoint decoding, and canonical saving are covered in Text. The native app
+still pins the earlier compatibility commit; rebuilding its bundled editor and
+replacing its internal JavaScript hooks remain the next integration step.
+
 Goal: integrate live Nextcloud Text collaboration into the native app, preserve
 offline work, and use a compatible editor runtime for each account/server.
 
@@ -28,11 +35,13 @@ support is deferred.
 Recommended next implementation milestone: develop the public integration API
 and app ownership rules together, using the proven bundled runtime first.
 
-- [ ] Replace the spike's internal Axios/component hooks with an explicit Text
-  transport interface for create, sync, push, save and close.
-- [ ] Define persistence hooks and durable-write acknowledgements, plus explicit
-  drain/save/close results. Propose these contracts upstream; no issues or
-  comments have been posted as part of this work.
+- [x] Add an explicit per-editor Text transport for create, sync, push, save and
+  close, plus Yjs state export and a shared Playwright/demo fixture.
+- [ ] Rebuild the native bundled runtime and replace its internal Axios/component
+  hooks with the public Text transport and lifecycle interface.
+- [x] Add explicit host checkpoint acknowledgements and drain/save/close results
+  in the Text draft PR. Failed writes and unconfirmed saves prevent closure.
+- [ ] Add automatic durable per-edit persistence and cold-restart recovery.
 - [x] Keep authentication and session credentials in Swift, with a shared,
   validated bridge decoder and bounded requests/responses, exercised by the
   two-client WebKit harness. App WebView wiring remains part of UI integration.
