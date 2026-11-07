@@ -180,6 +180,13 @@ extension AppModel {
                 snapshot: snapshot, api: api)
             return (result.snapshot, result.warnings)
         }
+        undoableTrash = request
+    }
+    func undoTrash() async {
+        guard let request = undoableTrash, case .trash(let page) = request.action else { return }
+        undoableTrash = nil
+        do { try await restorePage(pageID: page.id, request: request) }
+        catch { message = "Could not restore the page. \(error.localizedDescription)" }
     }
     func restorePage(pageID: Int, request: PageOrganizationRequest) async throws {
         try await organizePages(request: request, success: "Page restored on the server.") { snapshot, api in

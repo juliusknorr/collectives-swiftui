@@ -149,7 +149,9 @@ struct LibraryHomeView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
                     VStack(alignment: .leading, spacing: 6) {
+                        #if os(macOS)
                         Text("Home").font(.largeTitle.weight(.bold))
+                        #endif
                         Text("Pick up where you left off, \(model.account?.userID ?? "").")
                             .foregroundStyle(.secondary)
                     }

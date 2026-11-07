@@ -120,6 +120,7 @@ final class AppModel {
     var message = "" {
         didSet {
             guard message != oldValue else { return }
+            undoableTrash = nil
             messageClearTask?.cancel()
             guard !message.isEmpty else { messageClearTask = nil; return }
             let shown = message
@@ -131,6 +132,9 @@ final class AppModel {
         }
     }
     var messageLifetime: Duration = .seconds(6)
+    var undoableTrash: PageOrganizationRequest?
+    private(set) var queuedPage: Page?
+    private var openingPage = false
     private(set) var messageClearTask: Task<Void, Never>?
     var busy: Bool {
         get { session.busy }
@@ -496,9 +500,12 @@ final class AppModel {
         }
     }
     func openPage(_ page: Page) async {
-        guard !busy else { return }
+        guard !busy else {
+            if openingPage { queuedPage = page }
+            return
+        }
         if selectedPage?.id == page.id, document != nil, pageMode != .richText || !textRuntime.failed { return }
-        busy = true; defer { busy = false }
+        busy = true; openingPage = true; queuedPage = nil
         await finishTextEditing(retainingContent: pageMode == .richText)
         await pendingPersistence?.value
         if persistenceFailed {
@@ -507,6 +514,11 @@ final class AppModel {
             await loadPage(page)
         }
         await prepareTextEditing()
+        busy = false; openingPage = false
+        if let next = queuedPage {
+            queuedPage = nil
+            await openPage(next)
+        }
     }
     private func loadPage(_ page: Page) async {
         let key = String(page.id)
@@ -1346,6 +1358,16 @@ struct ContentView: View {
                 ContentUnavailableView("Choose a Collective", systemImage: "books.vertical")
             } else if !search.isEmpty && searchResults.isEmpty {
                 ContentUnavailableView.search(text: search)
+            } else if search.isEmpty && model.pages.isEmpty && model.busy {
+                ProgressView("Loading pages…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if search.isEmpty && model.pages.isEmpty {
+                ContentUnavailableView {
+                    Label("No Pages", systemImage: "doc.text")
+                } description: {
+                    Text("Refresh to load this collective's pages. New pages are added below its landing page.")
+                } actions: {
+                    Button("Refresh") { refreshPages() }
+                }
             } else {
                 List(selection: pageSelection) {
                     if search.isEmpty {
@@ -1353,7 +1375,7 @@ struct ContentView: View {
                             RememberedPageOutline(nodes: visibleTree, accountID: accountID,
                                 collectiveID: collectiveID, selectedPageID: model.selectedPage?.id) { node in
                                 pageRow(node.page, hasChildren: node.children != nil)
-                            }.disabled(model.busy)
+                            }
                         }
                     } else {
                         ForEach(searchResults) { page in
@@ -1363,7 +1385,7 @@ struct ContentView: View {
                                     Text(pagePath(page).map { $0.title }.joined(separator: " › "))
                                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                 }
-                            }.disabled(model.busy)
+                            }
                         }
                     }
                 }
@@ -1372,6 +1394,7 @@ struct ContentView: View {
                 .scrollContentBackground(.hidden)
                 #else
                 .listStyle(.insetGrouped)
+                .refreshable { await refreshPagesNow() }
                 #endif
             }
             #if os(macOS)
@@ -1393,7 +1416,9 @@ struct ContentView: View {
             if model.selectedCollective != nil {
                 ToolbarItem(placement: .status) {
                     Group {
-                        if model.downloadedCount == model.pages.count {
+                        if model.undoableTrash != nil {
+                            Button("Undo Move to Trash") { Task { await model.undoTrash() } }
+                        } else if model.downloadedCount == model.pages.count {
                             Text("^[\(model.pages.count) page](inflect: true), all offline")
                         } else {
                             Text("^[\(model.pages.count) page](inflect: true), \(model.downloadedCount) offline")
@@ -1425,9 +1450,7 @@ struct ContentView: View {
                 Button("Deleted Pages…", systemImage: "arrow.uturn.backward") { beginPageOrganization(.restore) }
                     .disabled(!model.canEdit)
                 Button("Download for Offline Editing", systemImage: "arrow.down.circle") { Task { await model.downloadCollective() } }
-                Button("Refresh Pages", systemImage: "arrow.clockwise") {
-                    if let id = model.selectedCollective { Task { await model.openCollective(id) } }
-                }
+                Button("Refresh Pages", systemImage: "arrow.clockwise") { refreshPages() }
             } label: { Label("Collective Actions", systemImage: "ellipsis.circle") }
                 .disabled(model.busy || model.syncing || model.selectedCollective == nil)
         }
@@ -1446,13 +1469,16 @@ struct ContentView: View {
                 pageModePicker
                 #endif
                 HStack(spacing: 5) {
-                    Text(collectiveTitle)
-                    ForEach(pagePath(page)) { ancestor in
-                        Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
-                        Button(ancestor.title) { Task { await model.openPage(ancestor) } }
-                            .buttonStyle(.plain)
+                    if let landing = model.pages.first(where: { $0.parentId == 0 }) {
+                        breadcrumbButton(collectiveTitle, page: landing)
+                    } else {
+                        Text(collectiveTitle)
                     }
-                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
+                    ForEach(pagePath(page)) { ancestor in
+                        breadcrumbChevron
+                        breadcrumbButton(ancestor.title, page: ancestor)
+                    }
+                    breadcrumbChevron
                     Text(page.title).fontWeight(.medium).foregroundStyle(.primary)
                         .layoutPriority(1)
                 }.font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -1572,6 +1598,9 @@ struct ContentView: View {
         HStack(spacing: 8) {
             Text(model.message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if model.undoableTrash != nil {
+                Button("Undo") { Task { await model.undoTrash() } }.controlSize(.small)
+            }
             ProgressView().controlSize(.small)
                 .frame(width: 16, height: 16)
                 .opacity(model.busy && showActivity ? 1 : 0)
@@ -1586,6 +1615,22 @@ struct ContentView: View {
         }
         .pickerStyle(.segmented).labelsHidden()
         .disabled(model.busy || !model.canEdit)
+    }
+    private var breadcrumbChevron: some View {
+        Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).accessibilityHidden(true)
+    }
+    private func breadcrumbButton(_ title: String, page: Page) -> some View {
+        Button(title) { Task { await model.openPage(page) } }
+            .buttonStyle(.plain)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+    }
+    private func refreshPages() { Task { await refreshPagesNow() } }
+    private func refreshPagesNow() async {
+        if let id = model.selectedCollective { await model.openCollective(id) }
+    }
+    private func favoriteButton(_ pageID: Int) -> some View {
+        Button(model.library.favoritePageIDs.contains(pageID) ? "Remove from Favorites" : "Add to Favorites", systemImage: "star") { model.toggleFavorite(pageID) }
     }
     private let detailInset: CGFloat = 16
     private var documentInset: CGFloat {
@@ -1653,7 +1698,7 @@ struct ContentView: View {
             if compact { compactColumn = .detail }
             Task {
                 await model.openPage(page)
-                if compact && model.selectedPage?.id != page.id { compactColumn = .content }
+                if compact && model.selectedPage?.id != page.id && model.queuedPage?.id != page.id { compactColumn = .content }
             }
         })
     }
@@ -1700,7 +1745,7 @@ struct ContentView: View {
             if let doc = model.snapshot.documents[String(page.id)] { draftIndicator(doc) }
         }
         .contextMenu {
-            Button(model.library.favoritePageIDs.contains(page.id) ? "Remove from Favorites" : "Add to Favorites", systemImage: "star") { model.toggleFavorite(page.id) }
+            favoriteButton(page.id)
             Button("Open Page", systemImage: "doc.text") { Task { await model.openPage(page) } }
             Button("Rename…", systemImage: "pencil") { beginRename(page) }
                 .disabled(model.busy || model.syncing || !model.canEdit || page.parentId == 0)
@@ -1710,6 +1755,12 @@ struct ContentView: View {
                 .disabled(model.busy || model.syncing || !model.canEdit || page.parentId == 0)
             Button("New Subpage…", systemImage: "doc.badge.plus") { beginNewPage(parent: page) }
                 .disabled(model.busy || model.syncing || !model.canEdit)
+        }
+        .swipeActions(edge: .leading) { favoriteButton(page.id).tint(.yellow) }
+        .swipeActions(edge: .trailing) {
+            if model.canEdit && page.parentId != 0 {
+                Button("Move to Trash…", systemImage: "trash") { beginPageOrganization(.trash(page)) }.tint(.red)
+            }
         }
         .help(([collectiveTitle] + pagePath(page).map { $0.title } + [page.title]).joined(separator: " › "))
     }
@@ -1739,7 +1790,7 @@ struct ContentView: View {
                             Image(systemName: "house").foregroundStyle(.secondary).frame(width: 20)
                             Text("Home").lineLimit(1)
                         }
-                    }.disabled(model.busy)
+                    }
                     ForEach(model.collectives(for: account.id)) { collective in
                         NavigationLink(value: SidebarDestination(accountID: account.id, collectiveID: collective.id)) {
                             HStack(spacing: 9) {
@@ -1750,7 +1801,7 @@ struct ContentView: View {
                                 }
                                 Text(collective.name).lineLimit(1)
                             }
-                        }.disabled(model.busy)
+                        }
                     }
                     if model.collectives(for: account.id).isEmpty {
                         Text(model.collectiveListingErrors[account.id] == nil ? "No collectives" : "No cached collectives")
@@ -1771,7 +1822,13 @@ struct ContentView: View {
                                     draftIndicator(doc)
                                 }.contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain).disabled(model.busy)
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                Button("Open Draft", systemImage: "doc.text") {
+                                    Task { await model.openDraft(doc.page.id); compactColumn = .detail }
+                                }
+                                favoriteButton(doc.page.id)
+                            }
                         }
                     }
                 } header: {
@@ -1813,6 +1870,7 @@ struct ContentView: View {
         .scrollContentBackground(.hidden)
         #else
         .listStyle(.insetGrouped)
+        .refreshable { await model.syncAccounts() }
         #endif
     }
     private var sidebarFooter: some View {
@@ -1836,14 +1894,18 @@ struct ContentView: View {
             Spacer(minLength: 0)
             HStack(spacing: 12) {
                 Menu {
-                    Button("Sync All Accounts", systemImage: "arrow.triangle.2.circlepath") { Task { await model.syncAccounts() } }
-                        .disabled(model.pageMode == .richText)
-                    Button("Refresh All Collectives", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
+                    if model.syncing {
+                        Button("Cancel Sync", systemImage: "xmark.circle") { model.cancelSync() }
+                            .disabled(!model.canCancelSync)
+                    } else {
+                        Button("Sync Now", systemImage: "arrow.triangle.2.circlepath") { Task { await model.syncAccounts() } }
+                            .disabled(model.busy || model.pageMode == .richText)
+                    }
                     Divider()
                     Toggle("Automatically Sync Active Account", isOn: $automaticSync)
-                } label: { Image(systemName: "arrow.triangle.2.circlepath").frame(width: 44, height: 44) }
+                } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
                     .buttonStyle(.plain).menuIndicator(.hidden)
-                    .fixedSize().disabled(model.busy || model.syncing)
+                    .fixedSize()
                     .accessibilityLabel("Sync Actions")
                 #if os(macOS)
                 SettingsLink { Image(systemName: "gearshape") }
@@ -1975,12 +2037,22 @@ struct LoginView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Connect to Nextcloud").font(.title2)
             TextField("Server URL", text: $server).textFieldStyle(.roundedBorder).disabled(session.working)
+                .onSubmit { begin() }
+                #if !os(macOS)
+                .keyboardType(.URL).textContentType(.URL)
+                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                #endif
             Text(session.status).font(.callout).textSelection(.enabled)
-            if session.working { ProgressView() }
             HStack {
                 Button("Cancel") { loginTask?.cancel(); dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Spacer()
-                Button(session.buttonTitle) { begin() }.disabled(session.working)
+                ProgressView().controlSize(.small)
+                    .opacity(session.working ? 1 : 0)
+                    .accessibilityHidden(!session.working)
+                Button(session.buttonTitle) { begin() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(session.working)
             }
         }.padding(24).frame(minWidth: 300, idealWidth: 440)
         .onAppear { server = model.loginServer }
@@ -1988,6 +2060,7 @@ struct LoginView: View {
         .onDisappear { loginTask?.cancel() }
     }
     private func begin() {
+        guard !session.working else { return }
         loginTask = Task { @MainActor in
             await session.signIn(serverURL: URL(string: server), openBrowser: { openURL($0) }) { login in
                 try await model.addAccount(login)
