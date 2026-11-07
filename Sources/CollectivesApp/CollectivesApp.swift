@@ -120,19 +120,19 @@ final class AppModel {
     /// Transient feedback; persistent state lives in `syncSummary` and the page header.
     var message = "" {
         didSet {
-            guard message != oldValue else { return }
             undoableTrash = nil
             messageClearTask?.cancel()
             guard !message.isEmpty else { messageClearTask = nil; return }
-            let shown = message
-            messageClearTask = Task { [weak self, lifetime = messageLifetime] in
+            messageGeneration += 1
+            messageClearTask = Task { [weak self, lifetime = messageLifetime, generation = messageGeneration] in
                 try? await Task.sleep(for: lifetime)
-                guard !Task.isCancelled, let self, self.message == shown else { return }
+                guard !Task.isCancelled, let self, self.messageGeneration == generation else { return }
                 self.message = ""
             }
         }
     }
     var messageLifetime: Duration = .seconds(6)
+    private var messageGeneration = 0
     var undoableTrash: PageOrganizationRequest?
     private(set) var queuedPage: Page?
     private var openingPage = false
@@ -479,28 +479,33 @@ final class AppModel {
             if let id = activeID { syncIssues[id] = SyncIssue(error: error) }
         }
     }
-    func openPage(_ page: Page) async {
+    /// Returns false when neither this page nor a page tapped while it was loading ended up open.
+    @discardableResult
+    func openPage(_ page: Page) async -> Bool {
         guard !busy else {
             if openingPage { queuedPage = page }
-            return
+            return openingPage
         }
-        if selectedPage?.id == page.id, document != nil, pageMode != .richText || !textRuntime.failed { return }
+        if selectedPage?.id == page.id, document != nil, pageMode != .richText || !textRuntime.failed { return true }
         busy = true; openingPage = true; queuedPage = nil
         await finishTextEditing(retainingContent: pageMode == .richText)
         await pendingPersistence?.value
+        var opened = false
         if persistenceFailed {
             message = "Save the current draft before switching pages."
         } else {
-            await loadPage(page)
+            opened = await loadPage(page)
         }
         await prepareTextEditing()
         busy = false; openingPage = false
         if let next = queuedPage {
             queuedPage = nil
-            await openPage(next)
+            return await openPage(next)
         }
+        return opened
     }
-    private func loadPage(_ page: Page) async {
+    @discardableResult
+    private func loadPage(_ page: Page) async -> Bool {
         let key = String(page.id)
         if snapshot.documents[key] == nil {
             do {
@@ -509,10 +514,10 @@ final class AppModel {
                 try await persist()
             } catch {
                 message = "Could not open this page. \(CollectivesError.userMessage(for: error))"
-                return
+                return false
             }
         }
-        guard let cached = snapshot.documents[key] else { return }
+        guard let cached = snapshot.documents[key] else { return false }
         selectedPage = page
         pageMode = modeForPage(hasConflict: cached.conflict != nil)
         if pageMode != .view && !claimEditor() { pageMode = .view }
@@ -520,6 +525,7 @@ final class AppModel {
             library.visit(pageID: page.id, collectiveID: collectiveID); saveLibrary()
         }
         text = cached.draft ?? cached.markdown
+        return true
     }
     func openDraft(_ pageID: Int) async {
         guard !busy else { return }
@@ -576,7 +582,9 @@ final class AppModel {
         return syncing && preferred == .richText ? .view : preferred
     }
     func resumeTextEditing() {
-        guard pageMode == .richText, !busy, !syncing, textSession == nil, document != nil else { return }
+        guard !busy, document != nil else { return }
+        if pageMode == .edit && !claimEditor() { pageMode = .view }
+        guard pageMode == .richText, !syncing, textSession == nil else { return }
         Task { await beginTextEditing() }
     }
     func changePageMode(_ mode: PageViewMode) async {
@@ -1707,8 +1715,7 @@ struct ContentView: View {
             guard let page = model.pages.first(where: { $0.id == id }) else { return }
             if compact { compactColumn = .detail }
             Task {
-                await model.openPage(page)
-                if compact && model.selectedPage?.id != page.id && model.queuedPage?.id != page.id { compactColumn = .content }
+                if await !model.openPage(page) && compact { compactColumn = .content }
             }
         })
     }

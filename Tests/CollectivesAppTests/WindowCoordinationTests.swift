@@ -202,6 +202,52 @@ func syncingOneWindowPreservesTypingInAnotherWindow() async throws {
 }
 
 @MainActor @Test
+func refreshingTheCollectiveKeepsTheEditClaim() async throws {
+    let f = try await WindowFixture()
+    defer { f.cleanup() }
+    await f.first.changePageMode(.edit)
+    #expect(await f.first.openCollective(7, refresh: false))
+    #expect(f.first.pageMode == .edit)
+    await f.second.changePageMode(.edit)
+    #expect(f.second.pageMode == .view)
+    #expect(f.second.editingInAnotherWindow)
+}
+
+private actor WindowCollectivesTransport: HTTPTransport {
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let url = request.url!
+        let page = #"{"id":%d,"title":"Page %d","fileName":"%d.md","filePath":"","collectivePath":"Collectives/Team","parentId":0}"#
+        let data: String
+        if url.path.hasSuffix("/collectives") {
+            data = #"{"collectives":[{"id":7,"name":"Updated","canEdit":false}]}"#
+        } else if url.path.hasSuffix("/pages") {
+            data = "{\"pages\":[\((1...2).map { String(format: page, $0, $0, $0) }.joined(separator: ","))]}"
+        } else {
+            return (Data(), HTTPURLResponse(url: url, statusCode: 304, httpVersion: nil, headerFields: ["ETag": "\"base\""])!)
+        }
+        let body = #"{"ocs":{"meta":{"statuscode":200},"data":"# + data + "}}"
+        return (Data(body.utf8), HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+    }
+}
+
+@MainActor @Test
+func syncingAllAccountsUpdatesAnotherAccountsOpenWindow() async throws {
+    let f = try await WindowFixture(transport: WindowCollectivesTransport())
+    defer { f.cleanup() }
+    let other = Account(serverURL: URL(string: "https://other.invalid")!, userID: "bob")
+    f.first.accounts.append(other)
+    f.second.activeID = other.id
+    f.second.snapshot = f.first.snapshot
+    try await f.store.saveSnapshot(f.second.snapshot, accountID: other.id)
+    #expect(await f.first.syncAccounts())
+    #expect(f.second.snapshot.collectives.first?.name == "Updated")
+    #expect(!f.second.canEdit)
+    #expect(f.second.selectedPage?.id == 1)
+    await f.first.pendingPersistence?.value
+    #expect(try await f.store.snapshot(accountID: other.id).collectives.first?.name == "Updated")
+}
+
+@MainActor @Test
 func startingWindowDuringOperationWaitsBeforeRestoringSelection() async throws {
     let f = try await WindowFixture()
     defer { f.cleanup() }

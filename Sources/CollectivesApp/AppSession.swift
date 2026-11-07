@@ -116,10 +116,7 @@ struct PageCommands: Commands {
         CommandMenu("Page") {
             Button("Rename…") { actions?.rename?() }.disabled(actions?.rename == nil)
             Button("Move…") { actions?.move?() }.disabled(actions?.move == nil)
-            Button("Move to Trash…") { actions?.trash?() }
-                // Text views use ⌘⌫ to delete to the line start, so the shortcut only applies while reading.
-                .keyboardShortcut(model?.pageMode == .view ? KeyboardShortcut(.delete) : nil)
-                .disabled(actions?.trash == nil)
+            Button("Move to Trash…") { actions?.trash?() }.disabled(actions?.trash == nil)
             Divider()
             Button(isFavorite ? "Remove from Favorites" : "Add to Favorites") {
                 if let id = model?.selectedPage?.id { model?.toggleFavorite(id) }

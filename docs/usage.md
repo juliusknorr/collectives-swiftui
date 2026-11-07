@@ -19,10 +19,9 @@ Press **Cmd+K** or use **Go to Page…** in the toolbar to jump between locally 
 | ⌘1 / ⌘2 / ⌘3 | View / Edit / Rich Text |
 | ⌘D | Add to or remove from Favorites |
 | ⌘R | Refresh Pages, keeping the open page if it still exists |
-| ⌘⌫ | Move to Trash… (in View only, so text editors keep ⌘⌫ for deleting to the line start) |
 | ⌘F, ⌘G, ⇧⌘G | Find in page, next and previous match |
 
-The **Page** menu also lists Rename…, Move…, and **Restore Source from Before Text Editing…** when a pre-Rich Text backup exists.
+The **Page** menu also lists Rename…, Move…, Move to Trash…, and **Restore Source from Before Text Editing…** when a pre-Rich Text backup exists.
 
 After approving a browser sign-in, return to Collectives to finish connecting. Polling pauses while the browser is active and temporary connection interruptions retry automatically. If finishing sign-in fails, **Retry Sign-In** can complete the existing approval without opening another browser flow.
 

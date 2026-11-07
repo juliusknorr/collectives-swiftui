@@ -183,10 +183,12 @@ extension AppModel {
         undoableTrash = request
     }
     func undoTrash() async {
-        guard let request = undoableTrash, case .trash(let page) = request.action else { return }
-        undoableTrash = nil
+        guard !busy, let request = undoableTrash, case .trash(let page) = request.action else { return }
         do { try await restorePage(pageID: page.id, request: request) }
-        catch { message = "Could not restore the page. \(error.localizedDescription)" }
+        catch {
+            message = "Could not restore the page. \(CollectivesError.userMessage(for: error))"
+            undoableTrash = request
+        }
     }
     func restorePage(pageID: Int, request: PageOrganizationRequest) async throws {
         try await organizePages(request: request, success: "Page restored on the server.") { snapshot, api in

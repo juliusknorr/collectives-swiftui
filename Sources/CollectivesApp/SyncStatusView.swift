@@ -97,7 +97,9 @@ struct SyncStatusView: View {
         VStack(alignment: .leading, spacing: 12) {
             if let activity = model.syncActivity { SyncProgressView(activity: activity, isCancelling: model.isCancellingSync, cancel: { model.cancelSync() }) }
             else if model.activeID.map({ model.syncIssues[$0] == nil }) == true {
-                Label(model.syncSummary(), systemImage: model.syncSymbol).font(.callout)
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    Label(model.syncSummary(now: context.date), systemImage: model.syncSymbol).font(.callout)
+                }
             }
             if let id = model.activeID, let issue = model.syncIssues[id] {
                 VStack(alignment: .leading, spacing: 8) {

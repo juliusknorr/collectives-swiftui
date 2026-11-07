@@ -63,13 +63,28 @@ func latestPageTappedWhileOpeningWins() async throws {
 }
 
 @MainActor @Test
+func supersededOpenReportsTheLaterPageAsOpened() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let pages = (1...2).map { Page(id: $0, title: "Page \($0)", fileName: "P\($0).md", filePath: "", collectivePath: "Collectives/Team", parentId: 0) }
+    let transport = HeldDownloadTransport()
+    let (model, _) = navigationModel(transport: transport, pages: pages, root: root)
+    let first = Task { await model.openPage(pages[0]) }
+    await transport.waitForHeldRequest()
+    #expect(await model.openPage(pages[1]))
+    await transport.release()
+    #expect(await first.value)
+    #expect(model.selectedPage?.id == 2)
+}
+
+@MainActor @Test
 func pageTappedDuringOtherWorkIsIgnored() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let page = Page(id: 1, title: "Page", fileName: "P.md", filePath: "", collectivePath: "Collectives/Team", parentId: 0)
     let (model, _) = navigationModel(transport: HeldDownloadTransport(), pages: [page], root: root)
     model.busy = true
-    await model.openPage(page)
+    #expect(await model.openPage(page) == false)
     #expect(model.selectedPage == nil)
     #expect(model.queuedPage == nil)
 }
@@ -121,5 +136,34 @@ func undoTrashExpiresWithItsMessage() async throws {
     try await model.trashPage(pageID: 2,
         request: PageOrganizationRequest(accountID: account.id, collectiveID: 7, action: .trash(note)))
     model.message = ""
+    #expect(model.undoableTrash == nil)
+}
+
+private actor FailingRestoreTransport: HTTPTransport {
+    private var failRestore = true
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        if request.httpMethod == "PATCH" && failRestore {
+            failRestore = false
+            throw URLError(.notConnectedToInternet)
+        }
+        return try await trash.send(request)
+    }
+    private let trash = TrashTransport()
+}
+
+@MainActor @Test
+func failedUndoTrashCanBeRetried() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let landing = Page(id: 1, title: "Team", fileName: "Readme.md", filePath: "", collectivePath: "Collectives/Team", parentId: 0)
+    let note = Page(id: 2, title: "Note", fileName: "Note.md", filePath: "", collectivePath: "Collectives/Team", parentId: 1)
+    let (model, account) = navigationModel(transport: FailingRestoreTransport(), pages: [landing, note], root: root)
+    try await model.trashPage(pageID: 2,
+        request: PageOrganizationRequest(accountID: account.id, collectiveID: 7, action: .trash(note)))
+    await model.undoTrash()
+    #expect(model.undoableTrash != nil)
+    #expect(model.message.hasPrefix("Could not restore the page."))
+    await model.undoTrash()
+    #expect(model.pages.map(\.id).sorted() == [1, 2])
     #expect(model.undoableTrash == nil)
 }

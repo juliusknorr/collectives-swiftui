@@ -68,6 +68,19 @@ private func document(id: Int, draft: String? = nil, conflict: RemoteDocument? =
 }
 
 @MainActor
+@Test func repeatingAMessageRestartsItsLifetime() async throws {
+    let (model, root) = statusModel()
+    defer { try? FileManager.default.removeItem(at: root) }
+    model.messageLifetime = .milliseconds(1)
+    model.message = "Page moved to the server trash."
+    let firstTimer = try #require(model.messageClearTask)
+    model.messageLifetime = .seconds(60)
+    model.message = "Page moved to the server trash."
+    await firstTimer.value
+    #expect(model.message == "Page moved to the server trash.")
+}
+
+@MainActor
 @Test func editingDoesNotPostSaveMessages() async throws {
     let (model, root) = statusModel()
     defer { try? FileManager.default.removeItem(at: root) }
