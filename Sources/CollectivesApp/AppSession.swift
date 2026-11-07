@@ -47,6 +47,7 @@ final class AppSession {
     var checkpointSnapshots: [UUID: AccountSnapshot] = [:]
     var checkpointVersions: [UUID: Int] = [:]
     var lastEdit: Date = Date.distantPast
+    var lastSyncDates: [UUID: Date] = [:]
     func editorOwner(accountID: UUID, pageID: Int) -> UUID? {
         let key = DocumentKey(accountID: accountID, pageID: pageID)
         guard let owner = editorOwners[key] else { return nil }

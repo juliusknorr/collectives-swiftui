@@ -21,9 +21,8 @@ public struct AccountSyncFailure: Sendable {
     init(collectiveID: Int, pageID: Int?, error: any Error) {
         self.collectiveID = collectiveID
         self.pageID = pageID
-        message = error.localizedDescription
-        if case CollectivesError.http(401) = error { requiresSignIn = true }
-        else { requiresSignIn = false }
+        message = CollectivesError.userMessage(for: error)
+        requiresSignIn = CollectivesError.requiresSignIn(error)
     }
 }
 

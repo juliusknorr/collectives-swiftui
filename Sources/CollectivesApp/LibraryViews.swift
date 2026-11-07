@@ -47,10 +47,14 @@ struct DocumentHeader: View {
                         .foregroundStyle(.secondary)
                 }
                 Button { showSyncStatus.toggle() } label: {
-                    Image(systemName: statusIcon)
-                        .symbolEffect(.pulse, isActive: model.syncing)
-                        .foregroundStyle(needsAttention ? Color.orange : Color.secondary)
-                        .frame(width: 24, height: 24)
+                    HStack(spacing: 4) {
+                        Image(systemName: statusIcon)
+                            .frame(width: 24, height: 24)
+                        if let caption = PageSaveState.caption(saveFailed: model.draftSaveFailed, document: model.document) {
+                            Text(caption)
+                        }
+                    }
+                    .foregroundStyle(needsAttention ? Color.orange : Color.secondary)
                 }
                 .buttonStyle(.plain)
                 .help("\(status). Show sync details")
@@ -75,24 +79,27 @@ struct DocumentHeader: View {
         } message: { Text(error ?? "") }
     }
     private var status: String {
-        if model.draftSaveFailed { return "Changes could not be saved on this device" }
-        if model.savingDraft { return "Saving changes on this device…" }
-        if model.document?.conflict != nil { return "Conflicting edits need review" }
-        if model.syncing { return "Syncing with Nextcloud…" }
-        if let id = model.activeID, model.syncIssues[id] != nil { return "Available offline · Sync needs attention" }
-        return model.document?.draft == nil ? "Available offline" : "Draft saved on this device"
+        if model.savingDraft && !model.draftSaveFailed { return "Saving on this device…" }
+        return PageSaveState.caption(saveFailed: model.draftSaveFailed, document: model.document) ?? "Available offline"
     }
     private var needsAttention: Bool {
         model.draftSaveFailed || model.document?.hasLocalChanges == true
-            || model.activeID.map { model.syncIssues[$0] != nil } == true
     }
     private var statusIcon: String {
         if model.draftSaveFailed { return "exclamationmark.triangle" }
         if model.savingDraft { return "externaldrive" }
         if model.document?.conflict != nil { return "exclamationmark.triangle" }
-        if model.syncing { return "arrow.triangle.2.circlepath" }
-        if let id = model.activeID, model.syncIssues[id] != nil { return "exclamationmark.icloud" }
         return model.document?.draft == nil ? "checkmark.icloud" : "pencil.circle"
+    }
+}
+
+/// Page-level save state only; account sync state belongs to `AppModel.syncSummary`.
+enum PageSaveState {
+    static func caption(saveFailed: Bool, document: CachedDocument?) -> String? {
+        if saveFailed { return "Not saved" }
+        if document?.conflict != nil { return "Conflict" }
+        if document?.draft != nil { return "Draft, not synced" }
+        return nil
     }
 }
 
@@ -147,7 +154,7 @@ struct LibraryHomeView: View {
                             .foregroundStyle(.secondary)
                     }
                     if model.pendingCount > 0 {
-                        Label("\(model.pendingCount) drafts saved on this device", systemImage: "pencil.circle")
+                        Label("^[\(model.pendingCount) draft](inflect: true) saved on this device", systemImage: "pencil.circle")
                             .font(.callout).foregroundStyle(.secondary)
                     }
                     pageSection("Favorites", ids: model.library.favoritePageIDs, symbol: "star", empty: "Favorite a page using its star or context menu.")

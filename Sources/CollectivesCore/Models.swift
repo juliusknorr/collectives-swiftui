@@ -88,18 +88,48 @@ public extension AccountSnapshot {
         }
     }
 }
-public enum CollectivesError: Error, LocalizedError, Sendable {
+public enum CollectivesError: Error, LocalizedError, Equatable, Sendable {
     case invalidServer, unsafeURL, http(Int), invalidResponse, missingETag, conflict, missingDocument, credential(Int32)
+    case noAccount, signInRequired, busy, richTextOpenElsewhere, draftNotSaved
     public var errorDescription: String? {
         switch self {
         case .invalidServer: "Enter an HTTPS Nextcloud server URL (HTTP is allowed only for localhost)."
         case .unsafeURL: "The server returned a URL outside the trusted server."
-        case .http(let code): "The server returned HTTP \(code)."
+        case .http(401): "Your session expired. Sign in again to continue."
+        case .http(403): "You don’t have permission to do this on Nextcloud."
+        case .http(404): "This item was not found on Nextcloud. It may have been moved or deleted."
+        case .http(let code) where (500...599).contains(code): "Nextcloud is unavailable right now. Try again later."
+        case .http(let code): "Nextcloud could not complete the request (error \(code))."
         case .invalidResponse: "The server returned an unexpected response."
         case .missingETag: "The server did not provide a revision. Saving is disabled to protect remote changes."
         case .conflict: "The page changed on the server. Your local draft has been preserved."
         case .missingDocument: "Download this page before editing offline."
         case .credential(let code): "Keychain operation failed (\(code))."
+        case .noAccount: "Add a Nextcloud account to continue."
+        case .signInRequired: "The saved sign-in for this account is missing. Sign in again to continue."
+        case .busy: "Another task is still running. Try again in a moment."
+        case .richTextOpenElsewhere: "Close Rich Text in the other window, then try again."
+        case .draftNotSaved: "Your latest draft could not be saved on this device. Free up storage, then try again."
         }
+    }
+    public var requiresSignIn: Bool {
+        switch self {
+        case .http(401), .signInRequired: true
+        default: false
+        }
+    }
+    /// Plain-language copy for any error shown to people, including network failures.
+    public static func userMessage(for error: any Error) -> String {
+        guard let code = (error as? URLError)?.code else { return error.localizedDescription }
+        switch code {
+        case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed, .internationalRoamingOff:
+            return "You’re offline. Your changes stay on this device until you reconnect."
+        case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed, .timedOut, .secureConnectionFailed:
+            return "Can’t reach the server. Check your connection and the server address."
+        default: return error.localizedDescription
+        }
+    }
+    public static func requiresSignIn(_ error: any Error) -> Bool {
+        (error as? CollectivesError)?.requiresSignIn ?? false
     }
 }

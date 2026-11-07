@@ -42,14 +42,14 @@ struct AppSettingsView: View {
             } header: {
                 Text("Pages")
             } footer: {
-                Text("When remembering is off, each page opens in the selected default mode. When on, pages use your last chosen mode, including after restarting. Read-only pages open in View. Closing the sidebar keeps the page list available on larger screens.")
+                Text("Pages open in the default mode, or your last used mode when remembering is on; read-only pages always open in View.")
             }
             Section {
-                Toggle("Automatically sync active account", isOn: $automaticSync)
+                Toggle("Automatically Sync Active Account", isOn: $automaticSync)
             } header: {
                 Text("Sync")
             } footer: {
-                Text("Refreshes pages while the app is active and syncs saved drafts after typing pauses. Uses server push when available. Conflicts stay on this device for review.")
+                Text("Keeps pages current while the app is open and syncs drafts when you pause typing.")
             }
             Section {
                 if model.accounts.isEmpty {
@@ -83,7 +83,7 @@ struct AppSettingsView: View {
             } header: {
                 Text("Accounts")
             } footer: {
-                Text("Each account has its own offline pages and drafts. Removing an account clears its credentials and downloads on this device. Accounts with unsynced drafts or conflicts must be synced or resolved first.")
+                Text("Removing an account deletes its offline pages from this device, so sync its drafts and resolve conflicts first.")
             }
             .disabled(model.busy || working)
             if let backup {

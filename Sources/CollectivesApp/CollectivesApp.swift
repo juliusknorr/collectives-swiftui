@@ -106,12 +106,32 @@ final class AppModel {
             session.refreshWindows(accountID: id, except: windowID)
         }
     }
-    var selectedCollective: Int?
+    var selectedCollective: Int? {
+        didSet { if selectedCollective != oldValue { message = "" } }
+    }
     var selectedPage: Page? {
-        didSet { if selectedPage?.id != oldValue?.id { sourceEditorGeneration = UUID() } }
+        didSet {
+            guard selectedPage?.id != oldValue?.id else { return }
+            sourceEditorGeneration = UUID(); message = ""
+        }
     }
     var text = ""
-    var message = ""
+    /// Transient feedback; persistent state lives in `syncSummary` and the page header.
+    var message = "" {
+        didSet {
+            guard message != oldValue else { return }
+            messageClearTask?.cancel()
+            guard !message.isEmpty else { messageClearTask = nil; return }
+            let shown = message
+            messageClearTask = Task { [weak self, lifetime = messageLifetime] in
+                try? await Task.sleep(for: lifetime)
+                guard !Task.isCancelled, let self, self.message == shown else { return }
+                self.message = ""
+            }
+        }
+    }
+    var messageLifetime: Duration = .seconds(6)
+    private(set) var messageClearTask: Task<Void, Never>?
     var busy: Bool {
         get { session.busy }
         set { session.busy = newValue }
@@ -216,6 +236,10 @@ final class AppModel {
         get { session.lastEdit }
         set { session.lastEdit = newValue }
     }
+    var lastSyncDates: [UUID: Date] {
+        get { session.lastSyncDates }
+        set { session.lastSyncDates = newValue }
+    }
 
     init(store: LocalStore? = nil, session: AppSession = AppSession(), preferences: LibraryPreferences = LibraryPreferences(),
          modePreferences: PageModePreferences = PageModePreferences(),
@@ -229,7 +253,7 @@ final class AppModel {
             guard let credential = try await Task.detached(operation: {
                 try KeychainCredentialStore().credential(accountID: account.id)
             }).value else {
-                throw CollectivesError.invalidResponse
+                throw CollectivesError.signInRequired
             }
             return CollectivesClient(account: account, credential: credential)
         }
@@ -272,7 +296,7 @@ final class AppModel {
     var conflictCount: Int { snapshot.documents.values.filter { $0.conflict != nil }.count }
     var downloadedCount: Int { pages.filter { snapshot.documents[String($0.id)] != nil }.count }
     var canEdit: Bool { snapshot.collectives.first { $0.id == selectedCollective }?.canEdit == true }
-    var syncSummary: String {
+    func syncSummary(now: Date = Date()) -> String {
         if savingDraft { return "Saving locally…" }
         if draftSaveFailed { return "Changes not saved" }
         if isCancellingSync { return "Cancelling sync…" }
@@ -281,9 +305,13 @@ final class AppModel {
         if let id = activeID, let issue = syncIssues[id] {
             return issue.requiresSignIn ? "Sign in to sync" : "Sync needs attention"
         }
-        if conflictCount > 0 { return "\(conflictCount) \(conflictCount == 1 ? "conflict" : "conflicts") to review" }
+        if conflictCount > 0 { return inflected("^[\(conflictCount) conflict](inflect: true) to review") }
         if automaticSyncPaused { return "Sync paused" }
-        return pendingCount == 0 ? "No pending drafts" : "\(pendingCount) pending \(pendingCount == 1 ? "draft" : "drafts")"
+        let state = pendingCount == 0 ? "Up to date" : inflected("^[\(pendingCount) draft](inflect: true) waiting to sync")
+        guard let synced = activeID.flatMap({ lastSyncDates[$0] }) else { return state }
+        let age = now.timeIntervalSince(synced) < 60 ? "just now"
+            : synced.formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
+        return "\(state) · Synced \(age)"
     }
     var syncSymbol: String {
         if draftSaveFailed || conflictCount > 0 { return "exclamationmark.triangle" }
@@ -314,18 +342,16 @@ final class AppModel {
                 await selectAccount(target.id, refresh: false)
                 await restoreSelection()
                 if pageMode != .richText && session.windows.compactMap(\.value).first(where: \.started) === self { await syncAccounts() }
-            } else {
-                message = "Add an account to get started."
             }
-        } catch { message = error.localizedDescription }
+        } catch { message = CollectivesError.userMessage(for: error) }
     }
     func client() throws -> CollectivesClient {
-        guard let account else { throw CollectivesError.invalidResponse }
-        guard let client = cachedClients[account] else { throw CollectivesError.invalidResponse }
+        guard let account else { throw CollectivesError.noAccount }
+        guard let client = cachedClients[account] else { throw CollectivesError.busy }
         return client
     }
     func activeClient() async throws -> CollectivesClient {
-        guard let account else { throw CollectivesError.invalidResponse }
+        guard let account else { throw CollectivesError.noAccount }
         return try await client(for: account)
     }
     func prepareReadingClient() async {
@@ -382,17 +408,16 @@ final class AppModel {
         preferences.lastAccountID = id
         guard refresh else { return true }
         do {
-            guard let account else { throw CollectivesError.invalidResponse }
+            guard let account else { throw CollectivesError.noAccount }
             let api = try await client(for: account)
             let remote = try await api.collectives()
             snapshot.replaceCollectives(remote)
             accountCollectives[id] = snapshot.collectives
-            try await persist(); message = "Collectives refreshed."
+            try await persist()
             collectiveListingErrors[id] = nil
         } catch {
-            collectiveListingErrors[id] = error.localizedDescription
+            collectiveListingErrors[id] = CollectivesError.userMessage(for: error)
             syncIssues[id] = SyncIssue(error: error)
-            message = "Using cached content."
         }
         return true
     }
@@ -426,11 +451,10 @@ final class AppModel {
                 session.refreshWindows(accountID: target.id)
                 try await store.saveSnapshot(local, accountID: target.id)
                 collectiveListingErrors[target.id] = nil
-            } catch { collectiveListingErrors[target.id] = error.localizedDescription }
+            } catch { collectiveListingErrors[target.id] = CollectivesError.userMessage(for: error) }
         }
-        if !excludingActive {
-            message = collectiveListingErrors.isEmpty ? "Collectives refreshed for all accounts." :
-                "Some accounts could not be refreshed. Their cached collectives are shown."
+        if !excludingActive && !collectiveListingErrors.isEmpty {
+            message = "Some accounts could not be refreshed. Showing their saved collectives."
         }
     }
     @discardableResult
@@ -463,13 +487,12 @@ final class AppModel {
     private func loadCollective(_ id: Int, refresh: Bool = true) async {
         selectedCollective = id; selectedPage = nil; text = ""
         library.collectiveID = id; library.pageID = nil; saveLibrary()
-        guard refresh else { message = "Using downloaded pages."; return }
+        guard refresh else { return }
         do {
             snapshot.replacePages(try await activeClient().pages(collectiveID: id), collectiveID: id)
-            try await persist(); message = "Select a page."
+            try await persist()
         } catch {
             if let id = activeID { syncIssues[id] = SyncIssue(error: error) }
-            message = "Using cached pages."
         }
     }
     func openPage(_ page: Page) async {
@@ -488,13 +511,12 @@ final class AppModel {
     private func loadPage(_ page: Page) async {
         let key = String(page.id)
         if snapshot.documents[key] == nil {
-            message = "Downloading the next page…"
             do {
                 let body = try await activeClient().download(page: page)
                 snapshot.documents[key] = CachedDocument(page: page, collectiveID: selectedCollective!, markdown: body.markdown, etag: body.etag)
                 try await persist()
             } catch {
-                message = "Could not open the next page. \(error.localizedDescription)"
+                message = "Could not open this page. \(CollectivesError.userMessage(for: error))"
                 return
             }
         }
@@ -506,8 +528,6 @@ final class AppModel {
             library.visit(pageID: page.id, collectiveID: collectiveID); saveLibrary()
         }
         text = cached.draft ?? cached.markdown
-        message = cached.conflict != nil ? "Conflict: local draft preserved. Choose Review Changes to compare versions." :
-            (cached.draft != nil ? "Local draft waiting to sync." : "")
     }
     func openDraft(_ pageID: Int) async {
         guard !busy else { return }
@@ -522,7 +542,6 @@ final class AppModel {
             if pageMode != .view && !claimEditor() { pageMode = .view }
             library.visit(pageID: doc.page.id, collectiveID: doc.collectiveID); saveLibrary()
             text = doc.draft ?? doc.markdown
-            message = doc.conflict == nil ? "Local draft waiting to sync." : "Conflict: compare your draft with the server version."
         }
         await prepareTextEditing()
     }
@@ -546,7 +565,6 @@ final class AppModel {
         let generation = UUID()
         editGeneration = generation; savingDraft = true
         let previous = pendingPersistence
-        message = "Saving draft locally…"
         pendingPersistence = Task {
             await previous?.value
             do {
@@ -558,7 +576,6 @@ final class AppModel {
                 }
                 persistenceFailed = false
                 if editGeneration == generation { savingDraft = false }
-                if activeID == id && editGeneration == generation { message = "Draft saved locally; waiting to sync." }
             } catch { savingDraft = false; persistenceFailed = true; message = "Draft not saved: \(error.localizedDescription)" }
         }
     }
@@ -666,7 +683,7 @@ final class AppModel {
                 try Task.checkCancellation()
                 syncIssues[target.id] = nil
                 if activeID == target.id, selectedPage?.id == page.id {
-                    message = document?.conflict == nil ? "Synced with server." : "Server changed. Your changes are saved for review."
+                    message = document?.conflict == nil ? "Page synced." : "The page changed on the server. Review your changes."
                 }
             }
         } catch {
@@ -684,7 +701,6 @@ final class AppModel {
         await finishTextEditing()
         await pendingPersistence?.value
         guard !persistenceFailed, !isCancellingSync, let target = account else { return }
-        message = "Downloading page text for offline use…"
         let previous = snapshot
         do {
             try await performAccountSync(id) { [self] in
@@ -699,15 +715,15 @@ final class AppModel {
                 snapshot = result.snapshot
                 reconcileSelection()
                 message = result.failures.isEmpty
-                    ? "Downloaded \(downloadedCount) page bodies. Existing drafts preserved. Images and attachments are not downloaded yet."
-                    : "Download incomplete; \(result.failures.count) pages need retry. Saved pages remain offline."
+                    ? inflected("^[\(downloadedCount) page](inflect: true) available offline. Images and attachments stay online.")
+                    : inflected("^[\(result.failures.count) page](inflect: true) could not be downloaded. Try again to finish.")
             }
         } catch {
             // Keep successful checkpoints if a later step fails or the user cancels.
             snapshot = (try? await store.snapshot(accountID: id)) ?? previous
             reconcileSelection()
             if !isCancellingSync {
-                message = "Download incomplete; saved pages remain offline. \(error.localizedDescription)"
+                message = "Download incomplete. \(CollectivesError.userMessage(for: error))"
             }
         }
     }
@@ -741,7 +757,10 @@ final class AppModel {
                     if let failure = result.failures.first {
                         syncIssues[target.id] = SyncIssue(message: failure.message,
                             requiresSignIn: result.failures.contains(where: \.requiresSignIn))
-                    } else { syncIssues[target.id] = nil }
+                    } else {
+                        syncIssues[target.id] = nil
+                        lastSyncDates[target.id] = Date()
+                    }
                 }
             } catch {
                 if Task.isCancelled || isCancellingSync {
@@ -749,7 +768,7 @@ final class AppModel {
                     return false
                 }
                 guard canSyncAccount(target.id), !(error is CancellationError) else { continue }
-                collectiveListingErrors[target.id] = error.localizedDescription
+                collectiveListingErrors[target.id] = CollectivesError.userMessage(for: error)
                 syncIssues[target.id] = SyncIssue(error: error)
             }
         }
@@ -766,7 +785,7 @@ final class AppModel {
     }
     private func finishSync() {
         if isCancellingSync && !persistenceFailed {
-            message = "Sync canceled. Saved pages and drafts are kept. Sync manually to resume automatic sync."
+            message = "Sync canceled. Your pages and drafts are kept. Sync manually to turn automatic sync back on."
         }
         syncing = false
         syncActivity = nil
@@ -1001,8 +1020,8 @@ final class AppModel {
             guard let id = activeID else { return }
             try await store.saveSnapshot(next, accountID: id)
             snapshot = next; text = doc.draft ?? doc.markdown
-            message = useServer ? "Server version selected." : "Local version queued against reviewed server revision."
-        } catch { message = error.localizedDescription }
+            message = useServer ? "Kept the server version." : "Kept your version. It syncs next."
+        } catch { message = CollectivesError.userMessage(for: error) }
     }
     func beginLogin(server: URL? = nil) {
         loginServer = server?.absoluteString ?? "https://"
@@ -1010,19 +1029,20 @@ final class AppModel {
     }
     func accountBackup(_ id: UUID) async throws -> String {
         await pendingPersistence?.value
-        guard !persistenceFailed else { throw CollectivesError.invalidResponse }
+        guard !persistenceFailed else { throw CollectivesError.draftNotSaved }
         let saved = try await store.snapshot(accountID: id)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return String(decoding: try encoder.encode(saved), as: UTF8.self)
     }
     func removeAccount(_ id: UUID) async throws {
-        guard !richTextInAnotherWindow, !busy, accounts.contains(where: { $0.id == id }) else { throw CollectivesError.invalidResponse }
+        guard !richTextInAnotherWindow else { throw CollectivesError.richTextOpenElsewhere }
+        guard !busy, accounts.contains(where: { $0.id == id }) else { throw CollectivesError.busy }
         busy = true
         defer { busy = false; resumeTextEditing() }
         await finishTextEditing()
         await pendingPersistence?.value
-        guard !persistenceFailed else { throw CollectivesError.invalidResponse }
+        guard !persistenceFailed else { throw CollectivesError.draftNotSaved }
         let saved = id == activeID ? snapshot : try await store.snapshot(accountID: id)
         guard !saved.documents.values.contains(where: \.hasLocalChanges) else { throw AccountRemovalError.unsyncedChanges }
         removingAccountIDs.insert(id)
@@ -1044,6 +1064,7 @@ final class AppModel {
         checkpointSnapshots[id] = nil; checkpointVersions[id] = nil
         syncBaselines[id] = nil
         syncIssues[id] = nil
+        lastSyncDates[id] = nil
         preferences.remove(accountID: id)
         session.libraries[id] = nil
         if activeID == id {
@@ -1104,12 +1125,13 @@ final class AppModel {
         return true
     }
     func setEmoji(_ emoji: String?) async throws {
-        guard !richTextInAnotherWindow, !busy, !syncing, canEdit, let page = selectedPage, let collectiveID = selectedCollective,
-              let accountID = activeID else { throw CollectivesError.invalidResponse }
+        guard !richTextInAnotherWindow else { throw CollectivesError.richTextOpenElsewhere }
+        guard !busy, !syncing, canEdit, let page = selectedPage, let collectiveID = selectedCollective,
+              let accountID = activeID else { throw CollectivesError.busy }
         busy = true; defer { busy = false; resumeTextEditing() }
         await finishTextEditing()
         await pendingPersistence?.value
-        guard !persistenceFailed else { throw CollectivesError.invalidResponse }
+        guard !persistenceFailed else { throw CollectivesError.draftNotSaved }
         let updated = try await activeClient().setPageEmoji(pageID: page.id, collectiveID: collectiveID, emoji: emoji)
         var next = snapshot
         next.pages[String(collectiveID)] = (next.pages[String(collectiveID)] ?? []).map { $0.id == page.id ? updated : $0 }
@@ -1118,8 +1140,9 @@ final class AppModel {
         snapshot = next; selectedPage = updated
     }
     func createPage(title: String, parentID: Int, collectiveID: Int, accountID: UUID) async throws {
-        guard !richTextInAnotherWindow, !busy, !syncing, activeID == accountID, selectedCollective == collectiveID, canEdit else {
-            throw CollectivesError.invalidResponse
+        guard !richTextInAnotherWindow else { throw CollectivesError.richTextOpenElsewhere }
+        guard !busy, !syncing, activeID == accountID, selectedCollective == collectiveID, canEdit else {
+            throw CollectivesError.busy
         }
         busy = true; defer { busy = false; resumeTextEditing() }
         await finishTextEditing()
@@ -1143,8 +1166,9 @@ final class AppModel {
         }
     }
     func renamePage(title: String, pageID: Int, collectiveID: Int, accountID: UUID) async throws {
-        guard !richTextInAnotherWindow, !busy, !syncing, activeID == accountID, selectedCollective == collectiveID, canEdit else {
-            throw CollectivesError.invalidResponse
+        guard !richTextInAnotherWindow else { throw CollectivesError.richTextOpenElsewhere }
+        guard !busy, !syncing, activeID == accountID, selectedCollective == collectiveID, canEdit else {
+            throw CollectivesError.busy
         }
         busy = true; defer { busy = false; resumeTextEditing() }
         await finishTextEditing()
@@ -1164,11 +1188,12 @@ final class AppModel {
         }
     }
     func addAccount(_ login: LoginCredentials) async throws {
-        guard !richTextInAnotherWindow, !busy, !syncing else { throw CollectivesError.invalidResponse }
+        guard !richTextInAnotherWindow else { throw CollectivesError.richTextOpenElsewhere }
+        guard !busy, !syncing else { throw CollectivesError.busy }
         busy = true; defer { busy = false; resumeTextEditing() }
         await finishTextEditing()
         await pendingPersistence?.value
-        guard !persistenceFailed else { throw CollectivesError.invalidResponse }
+        guard !persistenceFailed else { throw CollectivesError.draftNotSaved }
         let credential = Credential(loginName: login.loginName, appPassword: login.appPassword)
         let server = try ServerAddress.normalize(login.server)
         let provisional = Account(serverURL: server, userID: login.loginName)
@@ -1188,6 +1213,11 @@ final class AppModel {
         await selectAccount(new.id)
         await syncAccounts(automatic: true)
     }
+}
+
+/// Resolves `^[\(n) page](inflect: true)` markup into a plain string.
+func inflected(_ value: String.LocalizationValue) -> String {
+    String(AttributedString(localized: value).characters)
 }
 
 /// iPhone: a list keeps its row highlighted only while a later column is pushed.
@@ -1347,7 +1377,7 @@ struct ContentView: View {
             #if os(macOS)
             if model.selectedCollective != nil {
                 HStack {
-                    Label("\(model.pages.count) pages", systemImage: "doc.text")
+                    Label("^[\(model.pages.count) page](inflect: true)", systemImage: "doc.text")
                     Spacer()
                     Text("\(model.downloadedCount) offline")
                 }
@@ -1362,9 +1392,14 @@ struct ContentView: View {
         .toolbar {
             if model.selectedCollective != nil {
                 ToolbarItem(placement: .status) {
-                    Text(model.downloadedCount == model.pages.count ? "\(model.pages.count) pages, all offline"
-                        : "\(model.pages.count) pages, \(model.downloadedCount) offline")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Group {
+                        if model.downloadedCount == model.pages.count {
+                            Text("^[\(model.pages.count) page](inflect: true), all offline")
+                        } else {
+                            Text("^[\(model.pages.count) page](inflect: true), \(model.downloadedCount) offline")
+                        }
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
@@ -1746,7 +1781,8 @@ struct ContentView: View {
                         .accessibilityValue(account.serverURL.absoluteString)
                     if let error = model.collectiveListingErrors[account.id] {
                         Label("Could not refresh collectives", systemImage: "exclamationmark.icloud")
-                            .help(error)
+                            .textCase(nil)
+                        Text(error).textCase(nil).font(.caption).foregroundStyle(.secondary)
                     }
                     #endif
                 }
@@ -1788,8 +1824,8 @@ struct ContentView: View {
                     .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
-            .help("\(model.syncSummary). Show sync details")
-            .accessibilityLabel("Sync status: \(model.syncSummary)")
+            .help("\(model.syncSummary()). Show sync details")
+            .accessibilityLabel("Sync status: \(model.syncSummary())")
             .accessibilityHint("Show sync details")
             .disabled(model.activeID == nil && model.syncActivity == nil)
             .popover(isPresented: $showSyncIssue, arrowEdge: .bottom) {
@@ -1804,7 +1840,7 @@ struct ContentView: View {
                         .disabled(model.pageMode == .richText)
                     Button("Refresh All Collectives", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
                     Divider()
-                    Toggle("Auto-sync Active Account", isOn: $automaticSync)
+                    Toggle("Automatically Sync Active Account", isOn: $automaticSync)
                 } label: { Image(systemName: "arrow.triangle.2.circlepath").frame(width: 44, height: 44) }
                     .buttonStyle(.plain).menuIndicator(.hidden)
                     .fixedSize().disabled(model.busy || model.syncing)

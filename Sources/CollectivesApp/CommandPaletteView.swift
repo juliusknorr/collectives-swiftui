@@ -79,9 +79,11 @@ struct CommandPaletteView: View {
             }
             Divider()
             HStack {
+                #if os(macOS)
                 Text("↑↓ Select · Return Open · Esc Close")
+                #endif
                 Spacer()
-                Text("\(results.count) pages")
+                Text("^[\(results.count) page](inflect: true)")
             }.font(.caption).foregroundStyle(.secondary).padding(12)
         }
         .frame(idealWidth: 560, idealHeight: 440)
