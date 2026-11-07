@@ -21,5 +21,9 @@ public struct PageModePreferences {
         if hasConflict && preferred == .richText { return .edit }
         return preferred
     }
+    public func modeForNewPage(canEdit: Bool) -> PageViewMode {
+        let preferred = modeForPage(canEdit: canEdit, hasConflict: false)
+        return canEdit && preferred == .view ? .edit : preferred
+    }
     public func remember(_ mode: PageViewMode) { defaults.set(mode.rawValue, forKey: "lastPageMode") }
 }

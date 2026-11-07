@@ -115,3 +115,12 @@ func creationReportsSuccessWhenFollowupRequestsFail(failure: String) async throw
     #expect(result.snapshot.documents["2"]?.draft == "retained")
     #expect(await api.downloadCalls == 0)
 }
+
+@Test func titleHintExplainsInvalidTitlesOnly() {
+    #expect(PageCreator.titleHint("") == nil)
+    #expect(PageCreator.titleHint("   ") == nil)
+    #expect(PageCreator.titleHint("Meeting notes") == nil)
+    #expect(PageCreator.titleHint("Q1/Q2") == "Titles can't contain / or \\.")
+    #expect(PageCreator.titleHint("C:\\notes") == "Titles can't contain / or \\.")
+    #expect(PageCreator.titleHint("..") == PageCreationError.invalidTitle.errorDescription)
+}

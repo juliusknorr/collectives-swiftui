@@ -9,24 +9,30 @@ import UIKit
 @MainActor
 private final class MarkdownEditorActions: ObservableObject {
     var format: ((MarkdownEditing.Command) -> Void)?
+    var find: (() -> Void)?
 }
+
+private let formattingTools: [(title: String, icon: String, command: MarkdownEditing.Command)] = [
+    ("Heading", "textformat.size", .heading), ("Bold", "bold", .bold), ("Italic", "italic", .italic),
+    ("Link", "link", .link), ("Task", "checklist", .task), ("Code", "chevron.left.forwardslash.chevron.right", .code)
+]
 
 struct MarkdownSourceEditor: View {
     @Binding var text: String
     var disabled: Bool
+    @Binding var showingFind: Bool
+    var focusOnAppear = false
     @StateObject private var actions = MarkdownEditorActions()
 
     var body: some View {
         VStack(spacing: 0) {
+            #if os(macOS)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
-                    tool("Heading", icon: "textformat.size", command: .heading)
-                    tool("Bold", icon: "bold", command: .bold)
-                    tool("Italic", icon: "italic", command: .italic)
-                    Divider().frame(height: 18).padding(.horizontal, 4)
-                    tool("Link", icon: "link", command: .link)
-                    tool("Task", icon: "checklist", command: .task)
-                    tool("Code", icon: "chevron.left.forwardslash.chevron.right", command: .code)
+                    ForEach(formattingTools.indices, id: \.self) { index in
+                        if index == 3 { Divider().frame(height: 18).padding(.horizontal, 4) }
+                        tool(formattingTools[index].title, icon: formattingTools[index].icon, command: formattingTools[index].command)
+                    }
                 }
                 .buttonStyle(.borderless)
                 .padding(.horizontal, 12)
@@ -34,7 +40,14 @@ struct MarkdownSourceEditor: View {
             }
             .disabled(disabled)
             Divider()
-            NativeMarkdownEditor(text: $text, disabled: disabled, actions: actions)
+            #endif
+            NativeMarkdownEditor(text: $text, disabled: disabled, focusOnAppear: focusOnAppear, actions: actions)
+        }
+        .onAppear { showingFind = false }
+        .onChange(of: showingFind) { _, shown in
+            guard shown else { return }
+            actions.find?()
+            showingFind = false
         }
     }
 
@@ -51,6 +64,7 @@ struct MarkdownSourceEditor: View {
 private struct NativeMarkdownEditor: NSViewRepresentable {
     @Binding var text: String
     var disabled: Bool
+    var focusOnAppear: Bool
     let actions: MarkdownEditorActions
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -68,6 +82,8 @@ private struct NativeMarkdownEditor: NSViewRepresentable {
         view.isAutomaticSpellingCorrectionEnabled = false
         view.isAutomaticLinkDetectionEnabled = false
         view.allowsUndo = true
+        view.usesFindBar = true
+        view.isIncrementalSearchingEnabled = true
         view.minSize = NSSize(width: 0, height: 0)
         view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         view.isVerticallyResizable = true
@@ -76,7 +92,6 @@ private struct NativeMarkdownEditor: NSViewRepresentable {
         view.textContainer?.widthTracksTextView = true
         view.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         view.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
-        view.textContainerInset = NSSize(width: 20, height: 20)
         view.drawsBackground = false
         view.textColor = .textColor
         view.delegate = context.coordinator
@@ -87,6 +102,14 @@ private struct NativeMarkdownEditor: NSViewRepresentable {
         context.coordinator.view = view
         view.format = { [weak coordinator = context.coordinator] in coordinator?.format($0) }
         actions.format = { [weak coordinator = context.coordinator] in coordinator?.format($0) }
+        actions.find = { [weak view] in
+            guard let view else { return }
+            let showFind = NSMenuItem()
+            showFind.tag = NSTextFinder.Action.showFindInterface.rawValue
+            view.window?.makeFirstResponder(view)
+            view.performTextFinderAction(showFind)
+        }
+        if focusOnAppear { DispatchQueue.main.async { [weak view] in view?.window?.makeFirstResponder(view) } }
         return scroll
     }
 
@@ -126,6 +149,13 @@ private struct NativeMarkdownEditor: NSViewRepresentable {
 
 private final class SourceTextView: NSTextView {
     var format: ((MarkdownEditing.Command) -> Void)?
+    private let readingWidth: CGFloat = 740
+    private let minimumMargin: CGFloat = 28
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        let margin = max(minimumMargin, (newSize.width - readingWidth) / 2) - (textContainer?.lineFragmentPadding ?? 0)
+        if textContainerInset.width != margin { textContainerInset = NSSize(width: margin, height: 20) }
+    }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if modifiers == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "k" {
@@ -145,6 +175,7 @@ private final class SourceTextView: NSTextView {
 private struct NativeMarkdownEditor: UIViewRepresentable {
     @Binding var text: String
     var disabled: Bool
+    var focusOnAppear: Bool
     let actions: MarkdownEditorActions
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> SourceTextView {
@@ -162,10 +193,25 @@ private struct NativeMarkdownEditor: UIViewRepresentable {
         view.text = text
         view.isEditable = !disabled
         view.accessibilityLabel = "Markdown source"
+        view.isFindInteractionEnabled = true
+        view.inputAccessoryView = keyboardToolbar(view: view, coordinator: context.coordinator)
         context.coordinator.view = view
         view.format = { [weak coordinator = context.coordinator] in coordinator?.format($0) }
         actions.format = { [weak coordinator = context.coordinator] in coordinator?.format($0) }
+        actions.find = { [weak view] in view?.findInteraction?.presentFindNavigator(showingReplace: false) }
+        if focusOnAppear { DispatchQueue.main.async { [weak view] in view?.becomeFirstResponder() } }
         return view
+    }
+    private func keyboardToolbar(view: UITextView, coordinator: Coordinator) -> UIToolbar {
+        let toolbar = UIToolbar(frame: CGRect(x: 0, y: 0, width: 320, height: 44))
+        toolbar.items = formattingTools.map { tool in
+            let item = UIBarButtonItem(image: UIImage(systemName: tool.icon),
+                                       primaryAction: UIAction { [weak coordinator] _ in coordinator?.format(tool.command) })
+            item.accessibilityLabel = tool.title
+            return item
+        } + [.flexibleSpace(), UIBarButtonItem(systemItem: .done, primaryAction: UIAction { [weak view] _ in view?.resignFirstResponder() })]
+        toolbar.sizeToFit()
+        return toolbar
     }
     func updateUIView(_ view: SourceTextView, context: Context) {
         context.coordinator.parent = self

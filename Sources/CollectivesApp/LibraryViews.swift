@@ -4,17 +4,18 @@ import CollectivesCore
 struct DocumentHeader: View {
     @Bindable var model: AppModel
     let page: Page
+    var compact = false
     @State private var showIcons = false
     @State private var showSyncStatus = false
     @State private var error: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: compact ? .center : .top, spacing: compact ? 8 : 12) {
                 Button { showIcons = true } label: {
                     if let emoji = page.emoji, !emoji.isEmpty {
-                        Text(emoji).font(.system(size: 34)).accessibilityHidden(true)
+                        Text(emoji).font(.system(size: compact ? 20 : 34)).accessibilityHidden(true)
                     } else {
-                        Image(systemName: "doc.text").font(.system(size: 28))
+                        Image(systemName: "doc.text").font(.system(size: compact ? 17 : 28))
                             .foregroundStyle(.tertiary)
                     }
                 }
@@ -29,54 +30,61 @@ struct DocumentHeader: View {
                     }.disabled(model.busy || model.syncing)
                 }
                 Text(page.title)
-                    .font(.system(size: 32, weight: .bold))
+                    .font(compact ? .title3.bold() : .system(size: 32, weight: .bold))
+                    .lineLimit(compact ? 1 : nil)
                     .textSelection(.enabled).accessibilityAddTraits(.isHeader)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                if compact { syncStatusButton.font(.caption) }
                 Button {
                     model.toggleFavorite(page.id)
                 } label: {
                     Image(systemName: model.library.favoritePageIDs.contains(page.id) ? "star.fill" : "star")
                         .foregroundStyle(model.library.favoritePageIDs.contains(page.id) ? Color.yellow : Color.secondary)
-                }.buttonStyle(.plain).padding(.top, 8).help("Favorite page")
+                }.buttonStyle(.plain).padding(.top, compact ? 0 : 8).help("Favorite page")
                     .accessibilityLabel(model.library.favoritePageIDs.contains(page.id) ? "Remove from Favorites" : "Add to Favorites")
             }
-            HStack(spacing: 8) {
-                if let timestamp = page.timestamp {
-                    let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
-                    Text("Edited \(date.formatted(.relative(presentation: .named)))\(page.lastUserDisplayName.map { " by " + $0 } ?? "")")
-                        .foregroundStyle(.secondary)
-                }
-                Button { showSyncStatus.toggle() } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: statusIcon)
-                            .frame(width: 24, height: 24)
-                        if let caption = PageSaveState.caption(saveFailed: model.draftSaveFailed, document: model.document) {
-                            Text(caption)
-                        }
+            if !compact {
+                HStack(spacing: 8) {
+                    if let timestamp = page.timestamp {
+                        let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
+                        Text("Edited \(date.formatted(.relative(presentation: .named)))\(page.lastUserDisplayName.map { " by " + $0 } ?? "")")
+                            .foregroundStyle(.secondary)
                     }
-                    .foregroundStyle(needsAttention ? Color.orange : Color.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("\(status). Show sync details")
-                .accessibilityLabel(status)
-                .accessibilityHint("Show sync details")
-                .popover(isPresented: $showSyncStatus) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Label(status, systemImage: statusIcon)
-                            .font(.callout).padding(16)
-                        Divider()
-                        SyncStatusView(model: model)
-                    }.frame(width: 320)
-                }
-                .onChange(of: model.selectedPage?.id) { _, _ in showSyncStatus = false }
-                .onChange(of: model.activeID) { _, _ in showSyncStatus = false }
-                .onDisappear { showSyncStatus = false }
-            }.font(.caption)
+                    syncStatusButton
+                }.font(.caption)
+            }
         }
-        .padding(.bottom, 8)
+        .padding(.bottom, compact ? 0 : 8)
         .alert("Could Not Change Icon", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(error ?? "") }
+    }
+    private var syncStatusButton: some View {
+        Button { showSyncStatus.toggle() } label: {
+            HStack(spacing: 4) {
+                Image(systemName: statusIcon)
+                    .frame(width: 24, height: 24)
+                if let caption = PageSaveState.caption(saveFailed: model.draftSaveFailed, document: model.document) {
+                    Text(caption)
+                }
+            }
+            .foregroundStyle(needsAttention ? Color.orange : Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .help("\(status). Show sync details")
+        .accessibilityLabel(status)
+        .accessibilityHint("Show sync details")
+        .popover(isPresented: $showSyncStatus) {
+            VStack(alignment: .leading, spacing: 0) {
+                Label(status, systemImage: statusIcon)
+                    .font(.callout).padding(16)
+                Divider()
+                SyncStatusView(model: model)
+            }.frame(width: 320)
+        }
+        .onChange(of: model.selectedPage?.id) { _, _ in showSyncStatus = false }
+        .onChange(of: model.activeID) { _, _ in showSyncStatus = false }
+        .onDisappear { showSyncStatus = false }
     }
     private var status: String {
         if model.savingDraft && !model.draftSaveFailed { return "Saving on this device…" }
@@ -255,6 +263,15 @@ private struct OutlineBranch<Row: View>: View {
     }
 }
 
+private struct TitleHint: View {
+    let title: String
+    var body: some View {
+        if let hint = PageCreator.titleHint(title) {
+            Text(hint).font(.callout).foregroundStyle(.red)
+        }
+    }
+}
+
 struct NewPageRequest: Identifiable {
     let id = UUID()
     let accountID: UUID
@@ -294,6 +311,7 @@ struct NewPageSheet: View {
                     }
                 }
             }.disabled(submitting || unconfirmed)
+            TitleHint(title: title)
             Text("Creating a page requires a connection. It will be downloaded for offline editing when possible.")
                 .font(.callout).foregroundStyle(.secondary)
             if let error { Text(error).foregroundStyle(.red).font(.callout).textSelection(.enabled) }
@@ -365,6 +383,7 @@ struct RenamePageSheet: View {
             TextField("Title", text: $title).textFieldStyle(.roundedBorder).focused($titleFocused)
                 .onSubmit { if canRename { rename() } }
                 .disabled(submitting || unconfirmed)
+            TitleHint(title: title)
             Text("Renaming requires a connection and updates the page name and subpage paths. Markdown content and local drafts stay unchanged.")
                 .font(.callout).foregroundStyle(.secondary)
             if let error { Text(error).foregroundStyle(.red).font(.callout).textSelection(.enabled) }

@@ -37,6 +37,12 @@ public enum PageCreator {
         return title
     }
 
+    public static func titleHint(_ input: String) -> String? {
+        guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, (try? title(input)) == nil else { return nil }
+        if input.contains("/") || input.contains("\\") { return "Titles can't contain / or \\." }
+        return PageCreationError.invalidTitle.errorDescription
+    }
+
     public static func create(title input: String, parentID: Int, collectiveID: Int,
                               snapshot: AccountSnapshot, api: any PageCreationAPI) async throws -> CreatedPage {
         let title = try title(input)

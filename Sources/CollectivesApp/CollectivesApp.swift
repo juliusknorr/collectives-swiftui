@@ -1165,7 +1165,8 @@ final class AppModel {
         let previous = snapshot
         snapshot = result.snapshot
         selectedPage = result.page
-        pageMode = modeForPage(hasConflict: false)
+        pageMode = modePreferences.modeForNewPage(canEdit: canEdit)
+        if pageMode != .view && !claimEditor() { pageMode = .view }
         text = document?.draft ?? document?.markdown ?? ""
         library.visit(pageID: result.page.id, collectiveID: collectiveID); saveLibrary()
         do {
@@ -1487,15 +1488,15 @@ struct ContentView: View {
                         .font(.callout).foregroundStyle(.secondary).padding(.horizontal)
                 }
                 if model.pageMode == .richText && model.canEdit && model.document?.conflict == nil {
+                    editingHeader(page)
                     OfflineTextPage(runtime: model.textRuntime)
                         #if !os(macOS)
                         .padding(.horizontal, -detailInset)
                         #endif
                 } else if model.pageMode == .edit && model.canEdit {
-                    DocumentHeader(model: model, page: page)
-                        .frame(maxWidth: 740).frame(maxWidth: .infinity)
-                        .padding(.horizontal, documentInset)
-                    MarkdownSourceEditor(text: sourceEditorBinding(page: page), disabled: model.busy || model.editingInAnotherWindow)
+                    editingHeader(page)
+                    MarkdownSourceEditor(text: sourceEditorBinding(page: page), disabled: model.busy || model.editingInAnotherWindow,
+                                         showingFind: $showingFind, focusOnAppear: model.text.isEmpty)
                         .id(pageIdentity)
                 } else {
                     MarkdownReader(showingOutline: $showingOutline, showingFind: $showingFind, model: model, source: model.text, page: page, account: model.account,
@@ -1575,17 +1576,17 @@ struct ContentView: View {
                 ToolbarItem(placement: .primaryAction) { Spacer() }
                 #endif
                 ToolbarItemGroup(placement: .primaryAction) {
-                    Button {
-                        if showingOutline && model.pageMode == .view { showingOutline = false }
-                        else { Task { await model.changePageMode(.view); showingOutline = true } }
-                    } label: {
-                        Label("Table of Contents", systemImage: "sidebar.right")
+                    if model.pageMode == .view {
+                        Button { showingOutline.toggle() } label: {
+                            Label("Table of Contents", systemImage: "sidebar.right")
+                        }
+                        .labelStyle(.iconOnly)
+                        .help(showingOutline ? "Hide table of contents" : "Show table of contents")
+                        .accessibilityValue(showingOutline ? "Shown" : "Hidden")
                     }
-                    .labelStyle(.iconOnly)
-                    .help(showingOutline && model.pageMode == .view ? "Hide table of contents" : "Show table of contents")
-                    .accessibilityValue(showingOutline && model.pageMode == .view ? "Shown" : "Hidden")
                     Button {
-                        Task { await model.changePageMode(.view); showingFind = true }
+                        if model.pageMode == .richText { Task { await model.changePageMode(.view); showingFind = true } }
+                        else { showingFind = true }
                     } label: { Label("Find in Page", systemImage: "magnifyingglass") }
                     .labelStyle(.iconOnly)
                     .keyboardShortcut("f", modifiers: .command)
@@ -1593,6 +1594,11 @@ struct ContentView: View {
                 }
             }
         }
+    }
+    private func editingHeader(_ page: Page) -> some View {
+        DocumentHeader(model: model, page: page, compact: compact)
+            .frame(maxWidth: 740).frame(maxWidth: .infinity)
+            .padding(.horizontal, documentInset)
     }
     private var statusLine: some View {
         HStack(spacing: 8) {

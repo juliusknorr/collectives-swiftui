@@ -87,3 +87,12 @@ private actor ImageTransport: HTTPTransport {
         await #expect(throws: CollectivesError.self) { try await readingClient(transport: transport).downloadImage(at: image) }
     }
 }
+
+@Test func imageAltTextThatIsAFileNameIsDetected() {
+    for alt in ["image.png", "Screenshot 2024-01-01 at 10.00.00.PNG", "photo.jpeg", "diagram.svg ", "scan.HEIC"] {
+        #expect(ReadingResources.looksLikeFileName(alt))
+    }
+    for alt in ["", "Team photo", "Version 2.0", "notes.md", "Our office in Berlin."] {
+        #expect(!ReadingResources.looksLikeFileName(alt))
+    }
+}

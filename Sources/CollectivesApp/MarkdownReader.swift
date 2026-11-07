@@ -59,6 +59,11 @@ struct MarkdownReader: View {
                         }
                         if loaded && content.blocks.isEmpty {
                             Text("This page is empty.").foregroundStyle(.secondary)
+                            if model.canEdit {
+                                Button("Start Writing", systemImage: "square.and.pencil") {
+                                    Task { await model.changePageMode(.edit) }
+                                }.disabled(model.busy)
+                            }
                         }
                         VStack(alignment: .leading, spacing: 18) {
                             ForEach(Array(content.blocks.enumerated()), id: \.offset) { index, block in
@@ -392,19 +397,27 @@ private struct CodeBlockView: View {
     let language: String?
     let source: String
     var searchQuery: String = ""
+    @State private var copied = false
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text(language?.isEmpty == false ? language! : "Code").font(.caption.weight(.medium))
                 Spacer()
-                Button("Copy Code", systemImage: "doc.on.doc") {
+                Button("Copy Code", systemImage: copied ? "checkmark" : "doc.on.doc") {
                     #if os(macOS)
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(source, forType: .string)
                     #else
                     UIPasteboard.general.string = source
                     #endif
+                    copied = true
+                    AccessibilityNotification.Announcement("Code copied").post()
                 }.labelStyle(.iconOnly).buttonStyle(.plain).help("Copy code")
+                .task(id: copied) {
+                    guard copied else { return }
+                    try? await Task.sleep(for: .seconds(1.5))
+                    copied = false
+                }
             }.foregroundStyle(.secondary).padding(.horizontal, 14).padding(.vertical, 9)
             Divider().opacity(0.5)
             ScrollView(.horizontal) {
@@ -459,12 +472,13 @@ private struct ReadingImage: View {
     @State private var loading = false
     private static let cache = ReadingImageCache(root: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Collectives/Images"))
     private var url: URL? { context.resolve(source) }
+    private var caption: String? { alt.isEmpty || ReadingResources.looksLikeFileName(alt) ? nil : alt }
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let image {
                 image.resizable().scaledToFit().frame(maxHeight: 520)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .accessibilityLabel(alt.isEmpty ? "Page image" : alt)
+                    .accessibilityLabel(caption ?? "Page image")
             } else {
                 HStack(spacing: 10) {
                     if loading { ProgressView().controlSize(.small) }
@@ -474,7 +488,7 @@ private struct ReadingImage: View {
                     if let url { Link("Open", destination: url).font(.caption) }
                 }.padding(16).background(.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
             }
-            if image != nil && !alt.isEmpty { Text(alt).font(.caption).foregroundStyle(.secondary) }
+            if image != nil, let caption { Text(caption).font(.caption).foregroundStyle(.secondary) }
         }
         .task(id: url) {
             image = nil

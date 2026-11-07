@@ -34,3 +34,18 @@ import Testing
     defaults.set("invalid", forKey: "defaultPageMode")
     #expect(preferences.modeForPage(canEdit: true, hasConflict: false) == .view)
 }
+
+@Test func newPagesOpenForEditingWithoutChangingRememberedMode() {
+    let name = "PageModes-\(UUID())"
+    let defaults = UserDefaults(suiteName: name)!
+    defer { defaults.removePersistentDomain(forName: name) }
+    let preferences = PageModePreferences(defaults: defaults)
+    #expect(preferences.modeForNewPage(canEdit: true) == .edit)
+    #expect(preferences.modeForNewPage(canEdit: false) == .view)
+    defaults.set("richText", forKey: "defaultPageMode")
+    #expect(preferences.modeForNewPage(canEdit: true) == .richText)
+    defaults.set(true, forKey: "rememberPageMode")
+    preferences.remember(.view)
+    #expect(preferences.modeForNewPage(canEdit: true) == .edit)
+    #expect(preferences.modeForPage(canEdit: true, hasConflict: false) == .view)
+}

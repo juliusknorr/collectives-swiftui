@@ -1,6 +1,11 @@
 import Foundation
 
 public enum ReadingResources {
+    private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "avif", "svg", "bmp", "tif", "tiff"]
+    public static func looksLikeFileName(_ alt: String) -> Bool {
+        imageExtensions.contains((alt.trimmingCharacters(in: .whitespaces) as NSString).pathExtension.lowercased())
+    }
+
     public static func resolve(destination: String, documentURL: URL, account: Account) -> URL? {
         let value = destination.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, !value.contains("\\"),
