@@ -145,8 +145,8 @@ default mode or remember your most recently selected mode.
 
 Rich edits can normalize Markdown and discard unsupported syntax. Before the
 first Text session on a page, the app saves the exact source in the account's
-local snapshot. **Restore Source from Before Text Editing…** in the same menu
-restores that copy as a draft. Opening without editing leaves the source alone.
+local snapshot. **Restore Source from Before Text Editing…** in the collective actions menu
+(and **Page** menu on Mac) restores that copy as a draft. Opening without editing leaves the source alone.
 Try this on sample pages first. Attachments, mentions, live collaboration, and
 server-side Text sessions are not implemented in this prototype.
 

@@ -201,30 +201,6 @@ func syncingOneWindowPreservesTypingInAnotherWindow() async throws {
     #expect(saved.documents["2"]?.draft == "typed in second window while syncing")
 }
 
-private actor WindowCollectivesTransport: HTTPTransport {
-    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        let body = #"{"ocs":{"meta":{"statuscode":200},"data":{"collectives":[{"id":7,"name":"Updated","canEdit":false}]}}}"#
-        return (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
-    }
-}
-
-@MainActor @Test
-func refreshingAnotherAccountsCollectivesUpdatesItsOpenWindow() async throws {
-    let f = try await WindowFixture(transport: WindowCollectivesTransport())
-    defer { f.cleanup() }
-    let other = Account(serverURL: URL(string: "https://other.invalid")!, userID: "bob")
-    f.first.accounts.append(other)
-    f.second.activeID = other.id
-    f.second.snapshot = f.first.snapshot
-    try await f.store.saveSnapshot(f.second.snapshot, accountID: other.id)
-    await f.first.refresh(excludingActive: true)
-    #expect(f.second.snapshot.collectives.first?.name == "Updated")
-    #expect(!f.second.canEdit)
-    #expect(f.second.selectedPage?.id == 1)
-    try await f.second.persist()
-    #expect(try await f.store.snapshot(accountID: other.id).collectives.first?.name == "Updated")
-}
-
 @MainActor @Test
 func startingWindowDuringOperationWaitsBeforeRestoringSelection() async throws {
     let f = try await WindowFixture()

@@ -39,6 +39,7 @@ struct CollectivesApp: App {
         .windowToolbarStyle(.unifiedCompact)
         .commands {
             PageNavigationCommands()
+            PageCommands()
             WindowSyncCommands()
         }
         #endif
@@ -437,30 +438,6 @@ final class AppModel {
     func collectives(for accountID: UUID) -> [Collective] {
         accountID == activeID ? snapshot.collectives : accountCollectives[accountID] ?? []
     }
-    func refresh(excludingActive: Bool = false) async {
-        guard !session.hasRichTextEditor else { return }
-        let targets = accounts.filter { !excludingActive || $0.id != activeID }
-        guard !busy, !syncing, !targets.isEmpty else { return }
-        busy = true; defer { busy = false; resumeTextEditing() }
-        await finishTextEditing()
-        await pendingPersistence?.value
-        guard !persistenceFailed else { message = "Save the current draft before refreshing collectives."; return }
-        for target in targets {
-            do {
-                var local = try await snapshotForAccount(target.id)
-                let remote = try await client(for: target).collectives()
-                local.replaceCollectives(remote)
-                accountCollectives[target.id] = local.collectives
-                session.snapshots[target.id] = local
-                session.refreshWindows(accountID: target.id)
-                try await store.saveSnapshot(local, accountID: target.id)
-                collectiveListingErrors[target.id] = nil
-            } catch { collectiveListingErrors[target.id] = CollectivesError.userMessage(for: error) }
-        }
-        if !excludingActive && !collectiveListingErrors.isEmpty {
-            message = "Some accounts could not be refreshed. Showing their saved collectives."
-        }
-    }
     @discardableResult
     func openCollective(_ id: Int, refresh: Bool = true) async -> Bool {
         guard !busy, snapshot.collectives.contains(where: { $0.id == id }) else { return false }
@@ -489,11 +466,14 @@ final class AppModel {
         return true
     }
     private func loadCollective(_ id: Int, refresh: Bool = true) async {
-        selectedCollective = id; selectedPage = nil; text = ""
-        library.collectiveID = id; library.pageID = nil; saveLibrary()
+        if selectedCollective != id {
+            selectedCollective = id; selectedPage = nil; text = ""
+            library.collectiveID = id; library.pageID = nil; saveLibrary()
+        }
         guard refresh else { return }
         do {
             snapshot.replacePages(try await activeClient().pages(collectiveID: id), collectiveID: id)
+            reconcileSelection()
             try await persist()
         } catch {
             if let id = activeID { syncIssues[id] = SyncIssue(error: error) }
@@ -666,6 +646,13 @@ final class AppModel {
         guard let page = selectedPage,
               let original = snapshot.textSourceBackups?[String(page.id)] else { return }
         edited(original)
+    }
+    var hasTextSourceBackup: Bool {
+        selectedPage.flatMap { snapshot.textSourceBackups?[String($0.id)] } != nil
+    }
+    func syncLocalChanges() async {
+        guard document?.hasLocalChanges == true else { return }
+        await sync()
     }
     func sync() async {
         guard !busy, !syncing, pageMode != .richText, !session.hasRichTextEditor, let page = selectedPage, let target = account else { return }
@@ -1298,7 +1285,7 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button("Command Palette", systemImage: "magnifyingglass") { showCommandPalette = true }
+                Button("Go to Page…", systemImage: "doc.text.magnifyingglass") { showCommandPalette = true }
                     .help("Search all synced pages (⌘K)")
                     .disabled(model.busy || model.account == nil)
                     #if !os(macOS)
@@ -1308,6 +1295,7 @@ struct ContentView: View {
         }
         #if os(macOS)
         .focusedSceneValue(\.commandPalette, model.account != nil && !model.busy ? $showCommandPalette : nil)
+        .focusedSceneValue(\.pageCommandActions, pageCommandActions)
         .toolbarBackground(AppSurface.chrome, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
         #endif
@@ -1434,24 +1422,29 @@ struct ContentView: View {
         .navigationTitle(collectiveTitle)
         .toolbar {
             Button("New Page", systemImage: "square.and.pencil") { beginNewPage() }
+                #if !os(macOS)
                 .keyboardShortcut("n", modifiers: [.command, .shift])
-                .disabled(model.busy || model.syncing || !model.canEdit || model.pages.isEmpty)
+                #endif
+                .disabled(!canCreatePage)
             Menu {
                 Button("New Page…", systemImage: "doc.badge.plus") { beginNewPage() }
                     .disabled(!model.canEdit || model.pages.isEmpty)
                 Button("Rename Page…", systemImage: "pencil") {
-                    if let page = model.selectedPage { beginRename(page) }
-                }.disabled(!model.canEdit || model.selectedPage == nil || model.selectedPage?.parentId == 0)
+                    if let page = organizablePage { beginRename(page) }
+                }.disabled(organizablePage == nil)
                 Button("Move Page…", systemImage: "folder") {
-                    if let page = model.selectedPage { beginPageOrganization(.move(page)) }
-                }.disabled(!model.canEdit || model.selectedPage == nil || model.selectedPage?.parentId == 0)
+                    if let page = organizablePage { beginPageOrganization(.move(page)) }
+                }.disabled(organizablePage == nil)
                 Button("Move Page to Trash…", systemImage: "trash", role: .destructive) {
-                    if let page = model.selectedPage { beginPageOrganization(.trash(page)) }
-                }.disabled(!model.canEdit || model.selectedPage == nil || model.selectedPage?.parentId == 0)
+                    if let page = organizablePage { beginPageOrganization(.trash(page)) }
+                }.disabled(organizablePage == nil)
                 Button("Deleted Pages…", systemImage: "arrow.uturn.backward") { beginPageOrganization(.restore) }
                     .disabled(!model.canEdit)
                 Button("Download for Offline Editing", systemImage: "arrow.down.circle") { Task { await model.downloadCollective() } }
                 Button("Refresh Pages", systemImage: "arrow.clockwise") { refreshPages() }
+                if model.hasTextSourceBackup {
+                    Button("Restore Source from Before Text Editing…", systemImage: "clock.arrow.circlepath") { confirmRestoreText = true }
+                }
             } label: { Label("Collective Actions", systemImage: "ellipsis.circle") }
                 .disabled(model.busy || model.syncing || model.selectedCollective == nil)
         }
@@ -1555,13 +1548,6 @@ struct ContentView: View {
                     #if os(macOS)
                     pageModePicker.frame(width: 250)
                     #endif
-                    Menu {
-                        Button("Restore Source from Before Text Editing…") { confirmRestoreText = true }
-                            .disabled(model.selectedPage.flatMap { model.snapshot.textSourceBackups?[String($0.id)] } == nil)
-                    } label: { Label("Text Editor", systemImage: "textformat") }
-                    .accessibilityLabel("Text Editor")
-                    .help("Restore the original Markdown source from before rich-text editing")
-                    .disabled(model.busy)
                     ShareLink("Share Markdown", item: model.text)
                         .labelStyle(.iconOnly).help("Share Markdown source")
                     Button(model.document?.draft == nil ? "Reload Page" : "Sync Page",
@@ -1578,7 +1564,7 @@ struct ContentView: View {
                 ToolbarItemGroup(placement: .primaryAction) {
                     if model.pageMode == .view {
                         Button { showingOutline.toggle() } label: {
-                            Label("Table of Contents", systemImage: "sidebar.right")
+                            Label("Table of Contents", systemImage: "list.bullet.indent")
                         }
                         .labelStyle(.iconOnly)
                         .help(showingOutline ? "Hide table of contents" : "Show table of contents")
@@ -1631,6 +1617,24 @@ struct ContentView: View {
             .padding(.vertical, 4)
             .contentShape(Rectangle())
     }
+    private var canCreatePage: Bool { !model.busy && !model.syncing && model.canEdit && !model.pages.isEmpty }
+    private var organizablePage: Page? {
+        guard !model.busy, !model.syncing, model.canEdit, let page = model.selectedPage, page.parentId != 0 else { return nil }
+        return page
+    }
+    #if os(macOS)
+    private var pageCommandActions: PageCommandActions {
+        let page = organizablePage
+        let idle = !model.busy && !model.syncing && model.selectedCollective != nil
+        return PageCommandActions(
+            newPage: canCreatePage ? { beginNewPage() } : nil,
+            rename: page.map { page in { beginRename(page) } },
+            move: page.map { page in { beginPageOrganization(.move(page)) } },
+            trash: page.map { page in { beginPageOrganization(.trash(page)) } },
+            restoreSource: model.hasTextSourceBackup && !model.busy ? { confirmRestoreText = true } : nil,
+            refreshPages: idle ? { refreshPages() } : nil)
+    }
+    #endif
     private func refreshPages() { Task { await refreshPagesNow() } }
     private func refreshPagesNow() async {
         if let id = model.selectedCollective { await model.openCollective(id) }

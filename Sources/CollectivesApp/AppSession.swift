@@ -79,14 +79,81 @@ extension FocusedValues {
     }
 }
 
+/// Window actions that open sheets or alerts owned by the window's view; nil disables the menu item.
+struct PageCommandActions {
+    var newPage: (() -> Void)?
+    var rename: (() -> Void)?
+    var move: (() -> Void)?
+    var trash: (() -> Void)?
+    var restoreSource: (() -> Void)?
+    var refreshPages: (() -> Void)?
+}
+
+private struct PageCommandActionsKey: FocusedValueKey {
+    typealias Value = PageCommandActions
+}
+
+extension FocusedValues {
+    var pageCommandActions: PageCommandActions? {
+        get { self[PageCommandActionsKey.self] }
+        set { self[PageCommandActionsKey.self] = newValue }
+    }
+}
+
+struct PageCommands: Commands {
+    @FocusedValue(\.collectivesWindow) private var model
+    @FocusedValue(\.pageCommandActions) private var actions
+    private var isFavorite: Bool {
+        model?.selectedPage.map { model?.library.favoritePageIDs.contains($0.id) == true } == true
+    }
+    private let modeShortcuts: [PageViewMode: KeyEquivalent] = [.view: "1", .edit: "2", .richText: "3"]
+    var body: some Commands {
+        CommandGroup(after: .newItem) {
+            Button("New Page…") { actions?.newPage?() }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(actions?.newPage == nil)
+        }
+        CommandMenu("Page") {
+            Button("Rename…") { actions?.rename?() }.disabled(actions?.rename == nil)
+            Button("Move…") { actions?.move?() }.disabled(actions?.move == nil)
+            Button("Move to Trash…") { actions?.trash?() }
+                // Text views use ⌘⌫ to delete to the line start, so the shortcut only applies while reading.
+                .keyboardShortcut(model?.pageMode == .view ? KeyboardShortcut(.delete) : nil)
+                .disabled(actions?.trash == nil)
+            Divider()
+            Button(isFavorite ? "Remove from Favorites" : "Add to Favorites") {
+                if let id = model?.selectedPage?.id { model?.toggleFavorite(id) }
+            }
+            .keyboardShortcut("d")
+            .disabled(model?.selectedPage == nil)
+            Divider()
+            ForEach(PageViewMode.allCases, id: \.self) { mode in
+                Toggle(mode.title, isOn: Binding(get: { model?.pageMode == mode }, set: { _ in
+                    Task { await model?.changePageMode(mode) }
+                }))
+                .keyboardShortcut(modeShortcuts[mode]!)
+                .disabled(model?.document == nil || model?.busy == true || model?.canEdit != true)
+            }
+            Divider()
+            Button("Refresh Pages") { actions?.refreshPages?() }
+                .keyboardShortcut("r")
+                .disabled(actions?.refreshPages == nil)
+            if actions?.restoreSource != nil {
+                Divider()
+                Button("Restore Source from Before Text Editing…") { actions?.restoreSource?() }
+            }
+        }
+    }
+}
+
 struct WindowSyncCommands: Commands {
     @FocusedValue(\.collectivesWindow) private var model
     @AppStorage("automaticSync") private var automaticSync = true
     var body: some Commands {
         CommandGroup(after: .newItem) {
-            Button("Sync Current Page") { Task { await model?.sync() } }
+            Button("Sync Page Changes") { Task { await model?.syncLocalChanges() } }
                 .keyboardShortcut("s")
-                .disabled(model == nil || model?.busy == true || model?.syncing == true || model?.session.hasRichTextEditor == true || model?.selectedPage == nil)
+                .disabled(model == nil)
             Button("Sync All Accounts") { Task { await model?.syncAccounts() } }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
                 .disabled(model == nil || model?.busy == true || model?.syncing == true || model?.session.hasRichTextEditor == true)

@@ -4,9 +4,25 @@
 
 ## Navigation and settings
 
-The sidebar groups collectives by account, labeled with the username and server URL. Select a collective or an account’s Home to activate that account automatically. Home, drafts, and the command palette use the selected account. Home shows the account sidebar and dashboard without a page-list column; selecting a collective restores page navigation. Use **Add Account…** in the sidebar or manage accounts in Settings. Cached collective lists remain visible offline; **Refresh All Collectives** updates every account. Offline content and credentials are isolated per account. Expand page groups with their disclosure arrows; selecting a parent page is independent of expanding its children. Search covers page titles and downloaded text in the selected collective, with ancestor context for nested results.
+The sidebar groups collectives by account, labeled with the username and server URL. Select a collective or an account’s Home to activate that account automatically. Home, drafts, and the command palette use the selected account. Home shows the account sidebar and dashboard without a page-list column; selecting a collective restores page navigation. Use **Add Account…** in the sidebar or manage accounts in Settings. Cached collective lists remain visible offline; **Sync Now** updates every account. Offline content and credentials are isolated per account. Expand page groups with their disclosure arrows; selecting a parent page is independent of expanding its children. Search covers page titles and downloaded text in the selected collective, with ancestor context for nested results.
 
-Press **Cmd+K** or use **Command Palette** in the toolbar to jump between locally indexed pages across all collectives in the active account. Search by page title, collective, or ancestor names; recently opened pages appear first with an empty search. Use **↑/↓** to select, **Enter** to open, and **Escape** to dismiss. Downloaded pages open offline without refreshing the collective; pages with only synced metadata need a connection to download their text. The Markdown editor uses **Cmd+Shift+K** to insert a link.
+Press **Cmd+K** or use **Go to Page…** in the toolbar to jump between locally indexed pages across all collectives in the active account. Search by page title, collective, or ancestor names; recently opened pages appear first with an empty search. Use **↑/↓** to select, **Enter** to open, and **Escape** to dismiss. Downloaded pages open offline without refreshing the collective; pages with only synced metadata need a connection to download their text. The Markdown editor uses **Cmd+Shift+K** to insert a link.
+
+### Keyboard shortcuts (Mac)
+
+| Shortcut | Action |
+| --- | --- |
+| ⌘K | Go to Page (command palette) |
+| ⇧⌘N | File > New Page… |
+| ⌘S | Sync the current page's local changes; does nothing when there are none or in Rich Text, which saves drafts automatically |
+| ⇧⌘S | Sync All Accounts |
+| ⌘1 / ⌘2 / ⌘3 | View / Edit / Rich Text |
+| ⌘D | Add to or remove from Favorites |
+| ⌘R | Refresh Pages, keeping the open page if it still exists |
+| ⌘⌫ | Move to Trash… (in View only, so text editors keep ⌘⌫ for deleting to the line start) |
+| ⌘F, ⌘G, ⇧⌘G | Find in page, next and previous match |
+
+The **Page** menu also lists Rename…, Move…, and **Restore Source from Before Text Editing…** when a pre-Rich Text backup exists.
 
 After approving a browser sign-in, return to Collectives to finish connecting. Polling pauses while the browser is active and temporary connection interruptions retry automatically. If finishing sign-in fails, **Retry Sign-In** can complete the existing approval without opening another browser flow.
 

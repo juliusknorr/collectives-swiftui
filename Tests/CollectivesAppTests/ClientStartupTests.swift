@@ -72,7 +72,6 @@ private struct OfflineStartupTransport: HTTPTransport {
     await release.value
     await startup.value
     #expect(model.startupComplete)
-    await model.refresh()
     #expect(await gate.calls == 1)
     #expect(model.text == "Cached content")
 
@@ -97,7 +96,7 @@ private struct OfflineStartupTransport: HTTPTransport {
 }
 
 @MainActor
-@Test func startupKeepsCachedNoteAfterCredentialFailureAndRetriesOnRefresh() async throws {
+@Test func startupKeepsCachedNoteAfterCredentialFailureAndRetriesLater() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let suite = "ClientStartupTests.\(root.lastPathComponent)"
@@ -129,9 +128,9 @@ private struct OfflineStartupTransport: HTTPTransport {
     #expect(model.selectedPage?.id == page.id)
     #expect(model.text == "Saved content")
     #expect(attempts == 1)
-    await model.refresh()
+    await model.prepareReadingClient()
     #expect(attempts == 2)
-    await model.refresh()
+    await model.prepareReadingClient()
     #expect(attempts == 2)
     #expect(model.text == "Saved content")
     #expect(try await store.snapshot(accountID: account.id).documents["10"]?.markdown == "Saved content")

@@ -111,7 +111,7 @@ private func sidebarSnapshot(_ name: String, markdown: String) -> AccountSnapsho
     #expect(model.collectives(for: second.id).map(\.name) == ["Second collective"])
     #expect(model.collectiveListingErrors[first.id] != nil)
     #expect(model.collectiveListingErrors[second.id] != nil)
-    await model.refresh()
+    await model.syncAccounts()
     #expect(model.activeID == second.id)
     #expect(model.snapshot.documents["10"]?.markdown == "Second text")
     let savedFirst = try await store.snapshot(accountID: first.id)
