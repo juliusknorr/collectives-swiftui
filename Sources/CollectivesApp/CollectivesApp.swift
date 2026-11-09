@@ -1521,9 +1521,9 @@ struct ContentView: View {
     private var detailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let page = model.selectedPage, model.document != nil {
-                #if !os(macOS)
-                pageModePicker
-                #endif
+                if compact {
+                    compactPagePath(page)
+                } else {
                 HStack(spacing: 5) {
                     if let landing = model.pages.first(where: { $0.parentId == 0 }) {
                         breadcrumbButton(collectiveTitle, page: landing)
@@ -1538,6 +1538,7 @@ struct ContentView: View {
                     Text(page.title).fontWeight(.medium).foregroundStyle(.primary)
                         .layoutPriority(1)
                 }.font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
                 if model.editingInAnotherWindow {
                     Label("Editing in another window. Switch that window to View to edit here.", systemImage: "lock")
                         .font(.callout).foregroundStyle(.secondary).padding(.horizontal)
@@ -1609,6 +1610,8 @@ struct ContentView: View {
                 ToolbarItemGroup(placement: .primaryAction) {
                     #if os(macOS)
                     pageModePicker.frame(width: 250)
+                    #else
+                    if compact { pageModeMenu } else { pageModePicker.frame(width: 250) }
                     #endif
                     ShareLink("Share Markdown", item: model.text)
                         .labelStyle(.iconOnly).help("Share Markdown source")
@@ -1669,6 +1672,33 @@ struct ContentView: View {
         }
         .pickerStyle(.segmented).labelsHidden()
         .disabled(model.busy || !model.canEdit)
+    }
+    private var pageModeMenu: some View {
+        Menu {
+            Picker("Page Mode", selection: Binding(get: { model.pageMode }, set: { mode in
+                Task { await model.changePageMode(mode) }
+            })) {
+                ForEach(PageViewMode.allCases, id: \.self) { mode in
+                    Label(mode.title, systemImage: mode.systemImage).tag(mode)
+                }
+            }
+        } label: {
+            Label("Page Mode: \(model.pageMode.title)", systemImage: model.pageMode.systemImage)
+        }
+        .disabled(model.busy || !model.canEdit)
+    }
+    @ViewBuilder private func compactPagePath(_ page: Page) -> some View {
+        let ancestors = PageTree.nestedAncestors(of: page.id, pages: model.pages)
+        if !ancestors.isEmpty {
+            HStack(spacing: 5) {
+                ForEach(Array(ancestors.enumerated()), id: \.element.id) { index, ancestor in
+                    if index > 0 { breadcrumbChevron }
+                    breadcrumbButton(ancestor.title, page: ancestor)
+                }
+            }
+            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            .padding(.bottom, -8)
+        }
     }
     private var breadcrumbChevron: some View {
         Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).accessibilityHidden(true)

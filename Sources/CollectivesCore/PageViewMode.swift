@@ -8,6 +8,9 @@ public enum PageViewMode: String, CaseIterable, Sendable {
     public var title: String {
         switch self { case .view: "View"; case .edit: "Edit"; case .richText: "Rich Text" }
     }
+    public var systemImage: String {
+        switch self { case .view: "eye"; case .edit: "pencil"; case .richText: "textformat" }
+    }
 }
 
 public struct PageModePreferences {

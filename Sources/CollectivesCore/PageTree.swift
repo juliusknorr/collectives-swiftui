@@ -36,6 +36,11 @@ public enum PageTree {
         return result.reversed()
     }
 
+    /// Ancestors below the landing page, empty for top-level pages.
+    public static func nestedAncestors(of id: Int, pages: [Page]) -> [Page] {
+        Array(path(to: id, pages: pages).dropLast().drop { $0.parentId == 0 })
+    }
+
     private static func precedes(_ left: Page, _ right: Page) -> Bool {
         let locale = Locale(identifier: "en_US_POSIX")
         let comparison = left.title.lowercased(with: locale).compare(

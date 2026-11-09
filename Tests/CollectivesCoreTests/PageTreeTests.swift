@@ -57,3 +57,13 @@ private func treePage(_ id: Int, _ title: String, parent: Int = 0) -> Page {
     #expect(PageTree.path(to: 1, pages: []).isEmpty)
     #expect(PageNode(page: treePage(1, "Leaf"), children: []).children == nil)
 }
+
+@Test func nestedAncestorsSkipTheLandingPage() {
+    func page(_ id: Int, parent: Int) -> Page {
+        Page(id: id, title: "P\(id)", fileName: "P\(id).md", filePath: "", collectivePath: "Collectives/Team", parentId: parent)
+    }
+    let pages = [page(1, parent: 0), page(2, parent: 1), page(3, parent: 2), page(4, parent: 3)]
+    #expect(PageTree.nestedAncestors(of: 1, pages: pages).isEmpty)
+    #expect(PageTree.nestedAncestors(of: 2, pages: pages).isEmpty)
+    #expect(PageTree.nestedAncestors(of: 4, pages: pages).map(\.id) == [2, 3])
+}
