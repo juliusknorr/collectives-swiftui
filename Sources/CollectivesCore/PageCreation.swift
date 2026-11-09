@@ -37,6 +37,12 @@ public enum PageCreator {
         return title
     }
 
+    /// The open page when it belongs to `pages`, otherwise the landing page.
+    public static func defaultParent(selectedPageID: Int?, pages: [Page]) -> Int? {
+        if let selectedPageID, pages.contains(where: { $0.id == selectedPageID }) { return selectedPageID }
+        return pages.first { $0.parentId == 0 }?.id
+    }
+
     public static func titleHint(_ input: String) -> String? {
         guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, (try? title(input)) == nil else { return nil }
         if input.contains("/") || input.contains("\\") { return "Titles can't contain / or \\." }

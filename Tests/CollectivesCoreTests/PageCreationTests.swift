@@ -124,3 +124,13 @@ func creationReportsSuccessWhenFollowupRequestsFail(failure: String) async throw
     #expect(PageCreator.titleHint("C:\\notes") == "Titles can't contain / or \\.")
     #expect(PageCreator.titleHint("..") == PageCreationError.invalidTitle.errorDescription)
 }
+
+@Test func defaultParentIsTheOpenPageOrTheLandingPage() {
+    let landing = Page(id: 9, title: "Team", fileName: "Readme.md", filePath: "", collectivePath: "Collectives/Team", parentId: 0)
+    let pages = [parent, landing, child]
+    #expect(PageCreator.defaultParent(selectedPageID: 2, pages: pages) == 2)
+    #expect(PageCreator.defaultParent(selectedPageID: 9, pages: pages) == 9)
+    #expect(PageCreator.defaultParent(selectedPageID: nil, pages: pages) == 9)
+    #expect(PageCreator.defaultParent(selectedPageID: 77, pages: pages) == 9)
+    #expect(PageCreator.defaultParent(selectedPageID: 77, pages: []) == nil)
+}

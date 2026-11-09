@@ -1490,6 +1490,10 @@ struct ContentView: View {
             Menu {
                 Button("New Page…", systemImage: "doc.badge.plus") { beginNewPage() }
                     .disabled(!model.canEdit || model.pages.isEmpty)
+                if let page = model.selectedPage {
+                    Button("New Subpage…", systemImage: "doc.badge.plus") { beginNewPage(parent: page) }
+                        .disabled(!canCreatePage)
+                }
                 Button("Rename Page…", systemImage: "pencil") {
                     if let page = organizablePage { beginRename(page) }
                 }.disabled(organizablePage == nil)
@@ -1720,6 +1724,7 @@ struct ContentView: View {
         let idle = !model.busy && !model.syncing && model.selectedCollective != nil
         return PageCommandActions(
             newPage: canCreatePage ? { beginNewPage() } : nil,
+            newSubpage: canCreatePage ? model.selectedPage.map { page in { beginNewPage(parent: page) } } : nil,
             rename: page.map { page in { beginRename(page) } },
             move: page.map { page in { beginPageOrganization(.move(page)) } },
             trash: page.map { page in { beginPageOrganization(.trash(page)) } },
@@ -1750,9 +1755,10 @@ struct ContentView: View {
     private func beginNewPage(parent: Page? = nil) {
         guard !model.busy, model.canEdit, let accountID = model.activeID,
               let collectiveID = model.selectedCollective,
-              let parent = parent ?? model.pages.first(where: { $0.parentId == 0 }) else { return }
+              let parentID = parent?.id ?? PageCreator.defaultParent(selectedPageID: model.selectedPage?.id, pages: model.pages)
+        else { return }
         newPageRequest = NewPageRequest(accountID: accountID, collectiveID: collectiveID,
-            collectiveName: collectiveTitle, parentID: parent.id)
+            collectiveName: collectiveTitle, parentID: parentID)
     }
     private func beginRename(_ page: Page) {
         guard !model.busy, model.canEdit, page.parentId != 0,

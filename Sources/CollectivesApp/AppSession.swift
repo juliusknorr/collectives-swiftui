@@ -94,6 +94,7 @@ extension FocusedValues {
 /// Window actions that open sheets or alerts owned by the window's view; nil disables the menu item.
 struct PageCommandActions {
     var newPage: (() -> Void)?
+    var newSubpage: (() -> Void)?
     var rename: (() -> Void)?
     var move: (() -> Void)?
     var trash: (() -> Void)?
@@ -126,6 +127,8 @@ struct PageCommands: Commands {
                 .disabled(actions?.newPage == nil)
         }
         CommandMenu("Page") {
+            Button("New Subpage…") { actions?.newSubpage?() }.disabled(actions?.newSubpage == nil)
+            Divider()
             Button("Rename…") { actions?.rename?() }.disabled(actions?.rename == nil)
             Button("Move…") { actions?.move?() }.disabled(actions?.move == nil)
             Button("Move to Trash…") { actions?.trash?() }.disabled(actions?.trash == nil)

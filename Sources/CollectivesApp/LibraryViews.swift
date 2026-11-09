@@ -296,6 +296,7 @@ struct NewPageSheet: View {
     @State private var submitting = false
     @State private var error: String?
     @State private var unconfirmed = false
+    @State private var choosingLocation = false
     @FocusState private var titleFocused: Bool
 
     init(model: AppModel, request: NewPageRequest, onCreated: @escaping () -> Void) {
@@ -303,47 +304,75 @@ struct NewPageSheet: View {
         _parentID = State(initialValue: request.parentID)
     }
     private var pages: [Page] { model.snapshot.pages[String(request.collectiveID)] ?? [] }
-    private var validTitle: Bool { (try? PageCreator.title(title)) != nil }
+    private var canCreate: Bool {
+        (try? PageCreator.title(title)) != nil && !submitting && !unconfirmed && !model.busy && !model.syncing
+    }
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("New Page").font(.title2.bold())
-            Text(request.collectiveName).foregroundStyle(.secondary)
+        NavigationStack {
             Form {
-                TextField("Title", text: $title).focused($titleFocused)
-                    .onSubmit { if validTitle && !submitting && !unconfirmed { create() } }
-                Picker("Parent page", selection: $parentID) {
-                    ForEach(pages.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }) { page in
-                        Text(parentName(page)).tag(page.id)
+                Section {
+                    TextField("Title", text: $title).focused($titleFocused)
+                        .onSubmit { create() }
+                    locationRow
+                } header: {
+                    #if os(macOS)
+                    Text("New Page").font(.headline)
+                    #endif
+                } footer: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        TitleHint(title: title)
+                        Text("Needs a connection. The page is downloaded for offline editing.")
                     }
                 }
-            }.disabled(submitting || unconfirmed)
-            TitleHint(title: title)
-            Text("Creating a page requires a connection. It will be downloaded for offline editing when possible.")
-                .font(.callout).foregroundStyle(.secondary)
-            if let error { Text(error).foregroundStyle(.red).font(.callout).textSelection(.enabled) }
-            HStack {
-                if submitting { ProgressView().controlSize(.small); Text("Creating page…").foregroundStyle(.secondary) }
-                Spacer()
-                Button(unconfirmed ? "Close" : "Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction).disabled(submitting)
-                Button("Create") { create() }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!validTitle || submitting || unconfirmed || model.busy || model.syncing)
+                if let error {
+                    Section { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+                }
+            }
+            .formStyle(.grouped)
+            .disabled(submitting || unconfirmed)
+            .navigationTitle("New Page")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(unconfirmed ? "Close" : "Cancel", role: .cancel) { dismiss() }
+                        .keyboardShortcut(.cancelAction).disabled(submitting)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if submitting {
+                        ProgressView().accessibilityLabel("Creating page")
+                    } else {
+                        Button("Create") { create() }.keyboardShortcut(.defaultAction).disabled(!canCreate)
+                    }
+                }
             }
         }
-        .padding(24).frame(idealWidth: 440)
+        .presentationDetents([.medium, .large])
         #if os(macOS)
-        .frame(width: 440)
+        .frame(width: 440, height: 260)
         #endif
         .interactiveDismissDisabled(submitting)
         .onAppear { titleFocused = true }
     }
-    private func parentName(_ page: Page) -> String {
-        if page.parentId == 0 { return request.collectiveName + " (top level)" }
-        return PageTree.path(to: page.id, pages: pages).dropFirst().map(\.title).joined(separator: " › ")
+    @ViewBuilder private var locationRow: some View {
+        let picker = PageLocationPicker(pages: pages, collectiveName: request.collectiveName, selection: $parentID)
+        #if os(macOS)
+        Button { choosingLocation = true } label: {
+            LabeledContent("Location", value: locationName).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $choosingLocation) { picker.frame(width: 320, height: 380) }
+        #else
+        NavigationLink { picker } label: { LabeledContent("Location", value: locationName) }
+        #endif
+    }
+    private var locationName: String {
+        guard let page = pages.first(where: { $0.id == parentID }) else { return "" }
+        return page.parentId == 0 ? "\(request.collectiveName) (top level)" : "Inside \(page.title)"
     }
     private func create() {
-        guard !submitting, !unconfirmed, validTitle else { return }
+        guard canCreate else { return }
         submitting = true; error = nil
         Task {
             do {
@@ -356,6 +385,55 @@ struct NewPageSheet: View {
             }
             submitting = false
         }
+    }
+}
+
+private struct PageLocationPicker: View {
+    let collectiveName: String
+    @Binding var selection: Int
+    private let entries: [PageTreeEntry]
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+
+    init(pages: [Page], collectiveName: String, selection: Binding<Int>) {
+        self.collectiveName = collectiveName; _selection = selection
+        entries = PageTree.flattened(pages: pages)
+    }
+    var body: some View {
+        List(PageTree.filter(entries, title: query)) { entry in
+            Button { selection = entry.id; dismiss() } label: { row(entry) }
+                .buttonStyle(.plain)
+        }
+        #if os(macOS)
+        .safeAreaInset(edge: .top) {
+            TextField("Search", text: $query).textFieldStyle(.roundedBorder).padding([.horizontal, .top], 8)
+        }
+        #else
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always))
+        .navigationTitle("Location")
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+    }
+    private func row(_ entry: PageTreeEntry) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Label {
+                    Text(entry.page.parentId == 0 ? "\(collectiveName) (top level)" : entry.page.title)
+                } icon: {
+                    if let emoji = entry.page.emoji, !emoji.isEmpty { Text(emoji) } else { Image(systemName: "doc.text") }
+                }
+                if !query.isEmpty, !entry.ancestors.isEmpty {
+                    Text(([collectiveName] + entry.ancestors.filter { $0.parentId != 0 }.map(\.title)).joined(separator: " › "))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.leading, query.isEmpty ? CGFloat(entry.depth) * 16 : 0)
+            Spacer(minLength: 0)
+            if entry.id == selection {
+                Image(systemName: "checkmark").foregroundStyle(.tint).accessibilityLabel("Selected")
+            }
+        }
+        .contentShape(Rectangle())
     }
 }
 

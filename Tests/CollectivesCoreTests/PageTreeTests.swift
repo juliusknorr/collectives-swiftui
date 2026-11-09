@@ -67,3 +67,27 @@ private func treePage(_ id: Int, _ title: String, parent: Int = 0) -> Page {
     #expect(PageTree.nestedAncestors(of: 2, pages: pages).isEmpty)
     #expect(PageTree.nestedAncestors(of: 4, pages: pages).map(\.id) == [2, 3])
 }
+
+@Test func pageTreeFlattensDepthFirstWithAncestors() {
+    let pages = [
+        treePage(1, "Landing"), treePage(3, "beta", parent: 1), treePage(2, "Alpha", parent: 1),
+        treePage(4, "Nested", parent: 2), treePage(5, "Deep", parent: 4)
+    ]
+    let entries = PageTree.flattened(pages: pages)
+    #expect(entries.map(\.id) == [1, 2, 4, 5, 3])
+    #expect(entries.map(\.depth) == [0, 1, 2, 3, 1])
+    #expect(entries[3].ancestors.map(\.id) == [1, 2, 4])
+    #expect(PageTree.flattened(pages: []).isEmpty)
+}
+
+@Test func pageTreeFilterMatchesTitlesOnlyAndKeepsOrder() {
+    let entries = PageTree.flattened(pages: [
+        treePage(1, "Landing"), treePage(2, "Café notes", parent: 1),
+        treePage(3, "Meetings", parent: 1), treePage(4, "cafe plans", parent: 3)
+    ])
+    #expect(PageTree.filter(entries, title: "  ").map(\.id) == [1, 2, 3, 4])
+    #expect(PageTree.filter(entries, title: "CAFE").map(\.id) == [2, 4])
+    #expect(PageTree.filter(entries, title: "Meetings").map(\.id) == [3])
+    #expect(PageTree.filter(entries, title: "missing").isEmpty)
+    #expect(PageTree.filter(entries, title: "cafe").last?.ancestors.map(\.title) == ["Landing", "Meetings"])
+}

@@ -11,6 +11,13 @@ public struct PageNode: Identifiable, Hashable, Sendable {
     }
 }
 
+public struct PageTreeEntry: Identifiable, Hashable, Sendable {
+    public let page: Page
+    public let ancestors: [Page]
+    public var depth: Int { ancestors.count }
+    public var id: Int { page.id }
+}
+
 public enum PageTree {
     public static func build(pages: [Page]) -> [PageNode] {
         let (uniquePages, parents) = hierarchy(pages)
@@ -23,6 +30,23 @@ public enum PageTree {
         }
 
         return nodes(parent: nil)
+    }
+
+    /// Depth-first order of `build(pages:)`, each page with its ancestors.
+    public static func flattened(pages: [Page]) -> [PageTreeEntry] {
+        func entries(_ nodes: [PageNode], ancestors: [Page]) -> [PageTreeEntry] {
+            nodes.flatMap { node in
+                [PageTreeEntry(page: node.page, ancestors: ancestors)]
+                    + entries(node.children ?? [], ancestors: ancestors + [node.page])
+            }
+        }
+        return entries(build(pages: pages), ancestors: [])
+    }
+
+    public static func filter(_ entries: [PageTreeEntry], title query: String) -> [PageTreeEntry] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return entries }
+        return entries.filter { $0.page.title.localizedStandardContains(query) }
     }
 
     public static func path(to id: Int, pages: [Page]) -> [Page] {
