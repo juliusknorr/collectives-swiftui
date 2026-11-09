@@ -40,3 +40,30 @@ import Testing
     #expect(defaults.integer(forKey: "readingPosition.\(second.uuidString).7") == 5)
     #expect(restored.lastAccountID == second)
 }
+
+@Test func launchPageToggleSetsAndClearsTheChosenPage() {
+    var state = PageLibraryState()
+    #expect(state.launchPage == nil)
+    state.toggleLaunchPage(7)
+    #expect(state.launchPage == .page(7))
+    state.toggleLaunchPage(8)
+    #expect(state.launchPage == .page(8))
+    state.toggleLaunchPage(8)
+    #expect(state.launchPage == nil)
+}
+
+@Test @MainActor func libraryStateSavedBeforeLaunchPagesStillLoads() throws {
+    let suite = "LibraryTests.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let account = UUID()
+    let legacy = #"{"collectiveID":2,"pageID":7,"recentPageIDs":[7],"favoritePageIDs":[7]}"#
+    defaults.set(Data(legacy.utf8), forKey: "pageLibrary.\(account.uuidString)")
+    let state = LibraryPreferences(defaults: defaults).load(accountID: account)
+    #expect(state.pageID == 7 && state.favoritePageIDs == [7])
+    #expect(state.launchPage == nil)
+    var home = state
+    home.launchPage = .home
+    LibraryPreferences(defaults: defaults).save(home, accountID: account)
+    #expect(LibraryPreferences(defaults: defaults).load(accountID: account).launchPage == .home)
+}

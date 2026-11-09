@@ -1,7 +1,14 @@
 import Foundation
 
+public enum LaunchPage: Codable, Equatable, Hashable, Sendable {
+    case home
+    case page(Int)
+}
+
 public struct PageLibraryState: Codable, Equatable, Sendable {
     public var collectiveID: Int?
+    /// Nil opens the last opened page.
+    public var launchPage: LaunchPage?
     public var pageID: Int?
     public var recentPageIDs: [Int] = []
     public var favoritePageIDs: [Int] = []
@@ -15,6 +22,9 @@ public struct PageLibraryState: Codable, Equatable, Sendable {
     public mutating func toggleFavorite(_ pageID: Int) {
         if favoritePageIDs.contains(pageID) { favoritePageIDs.removeAll { $0 == pageID } }
         else { favoritePageIDs.append(pageID) }
+    }
+    public mutating func toggleLaunchPage(_ pageID: Int) {
+        launchPage = launchPage == .page(pageID) ? nil : .page(pageID)
     }
 }
 

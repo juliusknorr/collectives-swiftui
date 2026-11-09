@@ -1097,7 +1097,20 @@ final class AppModel {
         if let id = activeID { preferences.save(library, accountID: id) }
     }
     private func restoreSelection() async {
-        let saved = library
+        var saved = library
+        var launchPageMissing = false
+        switch saved.launchPage {
+        case .home:
+            showHome(); return
+        case .page(let pageID):
+            if let collectiveID = collectiveID(for: pageID) {
+                saved.collectiveID = collectiveID; saved.pageID = pageID
+            } else {
+                launchPageMissing = true
+            }
+        case nil: break
+        }
+        defer { if launchPageMissing { message = "Your start page is no longer available." } }
         guard let collectiveID = saved.collectiveID,
               snapshot.collectives.contains(where: { $0.id == collectiveID }) else { return }
         if await openCollective(collectiveID, refresh: false), let pageID = saved.pageID {
@@ -1111,6 +1124,23 @@ final class AppModel {
     }
     func toggleFavorite(_ pageID: Int) {
         library.toggleFavorite(pageID); saveLibrary()
+    }
+    func toggleLaunchPage(_ pageID: Int) {
+        library.toggleLaunchPage(pageID); saveLibrary()
+    }
+    func launchPage(accountID: UUID) -> LaunchPage? {
+        (session.libraries[accountID] ?? preferences.load(accountID: accountID)).launchPage
+    }
+    func setLaunchPage(_ launchPage: LaunchPage?, accountID: UUID) {
+        var state = session.libraries[accountID] ?? preferences.load(accountID: accountID)
+        state.launchPage = launchPage
+        session.libraries[accountID] = state
+        preferences.save(state, accountID: accountID)
+    }
+    func pageTitle(_ pageID: Int, accountID: UUID) -> String? {
+        guard let snapshot = session.snapshots[accountID] else { return nil }
+        return snapshot.documents[String(pageID)]?.page.title
+            ?? snapshot.pages.values.lazy.flatMap { $0 }.first { $0.id == pageID }?.title
     }
     var allPages: [Page] {
         var unique: [Int: Page] = [:]
@@ -1300,6 +1330,10 @@ struct ContentView: View {
                 }
             }
         }
+        .onChange(of: model.startupComplete) {
+            guard compact, model.startupComplete, compactColumn == .sidebar, model.activeID != nil else { return }
+            compactColumn = model.selectedPage == nil ? .content : .detail
+        }
         .task(id: model.busy) {
             showActivity = false
             guard model.busy else { return }
@@ -1461,6 +1495,7 @@ struct ContentView: View {
                 Button("Move Page to Trash…", systemImage: "trash", role: .destructive) {
                     if let page = organizablePage { beginPageOrganization(.trash(page)) }
                 }.disabled(organizablePage == nil)
+                if let pageID = model.selectedPage?.id { launchPageToggle(pageID) }
                 Button("Deleted Pages…", systemImage: "arrow.uturn.backward") { beginPageOrganization(.restore) }
                     .disabled(!model.canEdit)
                 Button("Download for Offline Editing", systemImage: "arrow.down.circle") { Task { await model.downloadCollective() } }
@@ -1665,6 +1700,11 @@ struct ContentView: View {
     private func favoriteButton(_ pageID: Int) -> some View {
         Button(model.library.favoritePageIDs.contains(pageID) ? "Remove from Favorites" : "Add to Favorites", systemImage: "star") { model.toggleFavorite(pageID) }
     }
+    private func launchPageToggle(_ pageID: Int) -> some View {
+        Toggle("Open at Launch", systemImage: "power", isOn: Binding(
+            get: { model.library.launchPage == .page(pageID) },
+            set: { _ in model.toggleLaunchPage(pageID) }))
+    }
     private let detailInset: CGFloat = 16
     private var documentInset: CGFloat {
         #if os(macOS)
@@ -1779,6 +1819,7 @@ struct ContentView: View {
         }
         .contextMenu {
             favoriteButton(page.id)
+            launchPageToggle(page.id)
             Button("Open Page", systemImage: "doc.text") { Task { await model.openPage(page) } }
             Button("Rename…", systemImage: "pencil") { beginRename(page) }
                 .disabled(model.busy || model.syncing || !model.canEdit || page.parentId == 0)

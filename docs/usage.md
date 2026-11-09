@@ -34,7 +34,7 @@ The sidebar gear opens **Settings**, also available through **Collectives > Sett
 
 Removing an account requires confirmation and clears only that account's credentials, downloaded pages, and cached images. You can remove an account while sync is running: its sync is canceled, late responses are ignored, and other accounts continue syncing. Unsynced drafts or conflicts block removal until synced or resolved. Account backups include downloaded Markdown, drafts, and server conflict copies, without credentials; keep exported backups private. Server content is not deleted.
 
-The home view provides recent pages and favorites stored locally per account. The app remembers the last account and page, expanded folders, and reading position on this device. Page headers show their emoji, editing information where available, and sync state. Emoji changes update Collectives on the server. Sync actions remain available separately from Settings; downloads and page refresh are in the collective actions menu.
+The home view provides recent pages and favorites stored locally per account. The app remembers the last account and page, expanded folders, and reading position on this device. At launch it reopens the last opened page unless Settings › Open at Launch picks Home or a specific page per account; choose a page with **Open at Launch** in its actions menu (or the Mac Page menu). If that page is gone, the last opened page opens instead. Page headers show their emoji, editing information where available, and sync state. Emoji changes update Collectives on the server. Sync actions remain available separately from Settings; downloads and page refresh are in the collective actions menu.
 
 ## Creating and renaming pages
 

@@ -44,6 +44,17 @@ struct AppSettingsView: View {
             } footer: {
                 Text("Pages open in the default mode, or your last used mode when remembering is on; read-only pages always open in View.")
             }
+            if !model.accounts.isEmpty {
+                Section {
+                    ForEach(model.accounts) { account in
+                        launchPagePicker(account)
+                    }
+                } header: {
+                    Text("Open at Launch")
+                } footer: {
+                    Text("Choose a specific page from its actions menu.")
+                }
+            }
             Section {
                 Toggle("Automatically Sync Active Account", isOn: $automaticSync)
             } header: {
@@ -111,6 +122,18 @@ struct AppSettingsView: View {
         )) { Button("OK", role: .cancel) {} } message: { Text(errorMessage ?? "") }
     }
 
+    private func launchPagePicker(_ account: Account) -> some View {
+        let selection = Binding(get: { model.launchPage(accountID: account.id) },
+                                set: { model.setLaunchPage($0, accountID: account.id) })
+        let label = model.accounts.count == 1 ? "Open at launch" : "\(account.userID) on \(account.serverURL.host ?? account.serverURL.absoluteString)"
+        return Picker(label, selection: selection) {
+            Text("Last Opened").tag(LaunchPage?.none)
+            Text("Home").tag(LaunchPage?.some(.home))
+            if case .page(let pageID) = selection.wrappedValue {
+                Text(model.pageTitle(pageID, accountID: account.id) ?? "Chosen Page").tag(LaunchPage?.some(.page(pageID)))
+            }
+        }
+    }
     private func login(server: URL?) {
         model.loginServer = server?.absoluteString ?? "https://"
         model.settingsLogin = true

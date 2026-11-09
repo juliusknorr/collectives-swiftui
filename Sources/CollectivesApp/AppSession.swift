@@ -134,6 +134,10 @@ struct PageCommands: Commands {
             }
             .keyboardShortcut("d")
             .disabled(model?.selectedPage == nil)
+            Toggle("Open at Launch", isOn: Binding(
+                get: { model?.selectedPage.map { model?.library.launchPage == .page($0.id) } == true },
+                set: { _ in if let id = model?.selectedPage?.id { model?.toggleLaunchPage(id) } }))
+            .disabled(model?.selectedPage == nil)
             Divider()
             ForEach(PageViewMode.allCases, id: \.self) { mode in
                 Toggle(mode.title, isOn: Binding(get: { model?.pageMode == mode }, set: { _ in
