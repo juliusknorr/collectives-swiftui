@@ -167,3 +167,37 @@ func failedUndoTrashCanBeRetried() async throws {
     #expect(model.pages.map(\.id).sorted() == [1, 2])
     #expect(model.undoableTrash == nil)
 }
+
+@MainActor @Test
+func navigationTapDuringOtherWorkWaitsAndLatestTapWins() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (model, _) = navigationModel(transport: HeldDownloadTransport(), pages: [], root: root)
+    model.busy = true
+    let first = Task { await model.waitForNavigationTurn() }
+    await Task.yield()
+    let second = Task { await model.waitForNavigationTurn() }
+    await Task.yield()
+    model.busy = false
+    #expect(await first.value == false)
+    #expect(await second.value == true)
+}
+
+@MainActor @Test
+func sidebarSelectsCollectiveBeforeRefreshingItsPages() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let transport = HeldDownloadTransport()
+    let (model, account) = navigationModel(transport: transport, pages: [], root: root)
+    model.snapshot.collectives.append(Collective(id: 8, name: "Other", canEdit: true))
+    var selectedWhileRefreshing: Int?
+    let open = Task {
+        await model.openSidebar(accountID: account.id, collectiveID: 8) {
+            selectedWhileRefreshing = model.selectedCollective
+        }
+    }
+    await transport.waitForHeldRequest()
+    #expect(selectedWhileRefreshing == 8)
+    await transport.release()
+    _ = await open.value
+}

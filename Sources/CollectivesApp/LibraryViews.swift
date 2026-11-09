@@ -143,6 +143,7 @@ private struct PageEmojiPicker: View {
 
 struct LibraryHomeView: View {
     @Bindable var model: AppModel
+    var onOpenPage: () -> Void = {}
     var body: some View {
         if !model.startupComplete {
             ProgressView("Loading library…")
@@ -181,7 +182,12 @@ struct LibraryHomeView: View {
             else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 12)], alignment: .leading, spacing: 12) {
                     ForEach(pages) { page in
-                        Button { Task { await model.openLibraryPage(page) } } label: {
+                        Button {
+                            Task {
+                                await model.openLibraryPage(page)
+                                if model.selectedPage?.id == page.id { onOpenPage() }
+                            }
+                        } label: {
                             VStack(alignment: .leading, spacing: 9) {
                                 HStack {
                                     if let emoji = page.emoji, !emoji.isEmpty { Text(emoji) }

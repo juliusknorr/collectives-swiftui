@@ -28,7 +28,18 @@ final class AppSession {
     var accounts: [Account] = []
     var accountCollectives: [UUID: [Collective]] = [:]
     var collectiveListingErrors: [UUID: String] = [:]
-    var busy: Bool = false
+    var busy: Bool = false {
+        didSet {
+            guard !busy else { return }
+            let waiters = idleWaiters
+            idleWaiters = []
+            waiters.forEach { $0.resume() }
+        }
+    }
+    @ObservationIgnored private var idleWaiters: [CheckedContinuation<Void, Never>] = []
+    func waitUntilIdle() async {
+        while busy { await withCheckedContinuation { idleWaiters.append($0) } }
+    }
     var syncing: Bool = false
     var isCancellingSync: Bool = false
     var automaticSyncPaused: Bool = false

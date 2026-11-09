@@ -136,6 +136,14 @@ final class AppModel {
     var undoableTrash: PageOrganizationRequest?
     private(set) var queuedPage: Page?
     private var openingPage = false
+    private var navigationRequest = 0
+    /// Waits for unrelated work to finish. Returns false when a later navigation tap replaced this one.
+    func waitForNavigationTurn(openingPage pageTap: Bool = false) async -> Bool {
+        navigationRequest &+= 1
+        let request = navigationRequest
+        while busy && !(pageTap && openingPage) { await session.waitUntilIdle() }
+        return request == navigationRequest
+    }
     private(set) var messageClearTask: Task<Void, Never>?
     var busy: Bool {
         get { session.busy }
@@ -448,7 +456,8 @@ final class AppModel {
         await loadCollective(id, refresh: refresh)
         return true
     }
-    func openSidebar(accountID: UUID, collectiveID: Int?) async -> Bool {
+    /// `onSelect` runs once the destination is selected, before its pages are refreshed from the server.
+    func openSidebar(accountID: UUID, collectiveID: Int?, onSelect: () -> Void = {}) async -> Bool {
         guard !busy, accounts.contains(where: { $0.id == accountID }) else { return false }
         busy = true; defer { busy = false; resumeTextEditing() }
         await finishTextEditing()
@@ -459,17 +468,19 @@ final class AppModel {
         }
         if let collectiveID {
             guard snapshot.collectives.contains(where: { $0.id == collectiveID }) else { return false }
-            await loadCollective(collectiveID)
+            await loadCollective(collectiveID, onSelect: onSelect)
         } else {
             showHome()
+            onSelect()
         }
         return true
     }
-    private func loadCollective(_ id: Int, refresh: Bool = true) async {
+    private func loadCollective(_ id: Int, refresh: Bool = true, onSelect: () -> Void = {}) async {
         if selectedCollective != id {
             selectedCollective = id; selectedPage = nil; text = ""
             library.collectiveID = id; library.pageID = nil; saveLibrary()
         }
+        onSelect()
         guard refresh else { return }
         do {
             snapshot.replacePages(try await activeClient().pages(collectiveID: id), collectiveID: id)
@@ -1268,7 +1279,7 @@ struct ContentView: View {
     #endif
     var body: some View {
         Group {
-            if model.selectedCollective == nil {
+            if model.selectedCollective == nil && !compact {
                 NavigationSplitView(columnVisibility: $homeColumnVisibility, preferredCompactColumn: $compactColumn) {
                     accountSidebar
                 } detail: {
@@ -1279,7 +1290,11 @@ struct ContentView: View {
                 NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $compactColumn) {
                     accountSidebar
                 } content: {
-                    pageList
+                    if model.selectedCollective == nil {
+                        LibraryHomeView(model: model) { compactColumn = .detail }.navigationTitle("Home")
+                    } else {
+                        pageList
+                    }
                 } detail: {
                     detailContent
                 }
@@ -1689,16 +1704,16 @@ struct ContentView: View {
             return model.activeID.map { SidebarDestination(accountID: $0, collectiveID: model.selectedCollective) }
         }, set: { destination in
             guard let destination else { return }
-            if compact { compactColumn = destination.collectiveID == nil ? .detail : .content }
             Task {
+                guard await model.waitForNavigationTurn() else { return }
                 let previous = model.activeID.map {
                     SidebarDestination(accountID: $0, collectiveID: model.selectedCollective)
                 }
-                guard await model.openSidebar(accountID: destination.accountID, collectiveID: destination.collectiveID) else {
-                    if compact { compactColumn = .sidebar }
-                    return
-                }
-                search = ""
+                guard await model.openSidebar(accountID: destination.accountID, collectiveID: destination.collectiveID, onSelect: {
+                    search = ""
+                    if compact { compactColumn = .content }
+                }) else { return }
+                if compact { return }
                 if destination.collectiveID == nil { compactColumn = .detail }
                 else if previous?.collectiveID == nil {
                     columnVisibility = closeSidebarAfterCollectiveSwitch ? .doubleColumn : .all
@@ -1715,6 +1730,7 @@ struct ContentView: View {
             guard let page = model.pages.first(where: { $0.id == id }) else { return }
             if compact { compactColumn = .detail }
             Task {
+                guard await model.waitForNavigationTurn(openingPage: true) else { return }
                 if await !model.openPage(page) && compact { compactColumn = .content }
             }
         })
