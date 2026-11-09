@@ -43,8 +43,8 @@ private final class LaunchFixture {
         preferences.lastAccountID = accounts[0].id
     }
 
-    func startedModel() async -> AppModel {
-        let model = AppModel(store: store, preferences: preferences, modePreferences: PageModePreferences(defaults: defaults)) { account in
+    func startedModel(session: AppSession = AppSession()) async -> AppModel {
+        let model = AppModel(store: store, session: session, preferences: preferences, modePreferences: PageModePreferences(defaults: defaults)) { account in
             CollectivesClient(account: account, credential: Credential(loginName: "test", appPassword: "test"),
                               transport: OfflineTransport())
         }
@@ -122,4 +122,26 @@ private final class LaunchFixture {
     model.setLaunchPage(.home, accountID: fixture.accounts[1].id)
     #expect(fixture.preferences.load(accountID: fixture.accounts[1].id).launchPage == .home)
     #expect(model.launchPage(accountID: fixture.accounts[0].id) == nil)
+}
+
+@MainActor
+@Test func launchHomeKeepsTheLastOpenedPage() async throws {
+    let fixture = try await LaunchFixture(launchPage: .home)
+    defer { fixture.cleanup() }
+    _ = await fixture.startedModel()
+    let saved = fixture.preferences.load(accountID: fixture.accounts[0].id)
+    #expect(saved.collectiveID == 7)
+    #expect(saved.pageID == 70)
+}
+
+@MainActor
+@Test func launchPageAppliesOnlyToTheFirstWindow() async throws {
+    let fixture = try await LaunchFixture(launchPage: .home)
+    defer { fixture.cleanup() }
+    let session = AppSession()
+    let first = await fixture.startedModel(session: session)
+    #expect(first.selectedCollective == nil)
+    let second = await fixture.startedModel(session: session)
+    #expect(second.selectedCollective == 7)
+    #expect(second.selectedPage?.id == 70)
 }

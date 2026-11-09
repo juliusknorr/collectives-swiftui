@@ -141,6 +141,7 @@ final class AppModel {
     func waitForNavigationTurn(openingPage pageTap: Bool = false) async -> Bool {
         navigationRequest &+= 1
         let request = navigationRequest
+        if busy && !(pageTap && openingPage) { message = "Opening after the current task finishes…" }
         while busy && !(pageTap && openingPage) { await session.waitUntilIdle() }
         return request == navigationRequest
     }
@@ -1099,9 +1100,12 @@ final class AppModel {
     private func restoreSelection() async {
         var saved = library
         var launchPageMissing = false
-        switch saved.launchPage {
+        let launchPage = session.launchPageApplied ? nil : saved.launchPage
+        session.launchPageApplied = true
+        switch launchPage {
         case .home:
-            showHome(); return
+            selectedCollective = nil; selectedPage = nil; text = ""
+            return
         case .page(let pageID):
             if let collectiveID = collectiveID(for: pageID) {
                 saved.collectiveID = collectiveID; saved.pageID = pageID

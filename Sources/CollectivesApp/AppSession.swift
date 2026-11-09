@@ -21,6 +21,7 @@ final class AppSession {
         let pageID: Int
     }
     var accountsLoaded = false
+    var launchPageApplied = false
     var snapshots: [UUID: AccountSnapshot] = [:]
     var libraries: [UUID: PageLibraryState] = [:]
     var windows: [WeakAppWindow] = []

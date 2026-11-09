@@ -67,3 +67,11 @@ import Testing
     LibraryPreferences(defaults: defaults).save(home, accountID: account)
     #expect(LibraryPreferences(defaults: defaults).load(accountID: account).launchPage == .home)
 }
+
+@Test func unknownLaunchPageKeepsFavoritesAndRecents() throws {
+    let json = #"{"launchPage":{"collective":{"_0":3}},"favoritePageIDs":[4],"recentPageIDs":[5]}"#
+    let state = try JSONDecoder().decode(PageLibraryState.self, from: Data(json.utf8))
+    #expect(state.launchPage == nil)
+    #expect(state.favoritePageIDs == [4])
+    #expect(state.recentPageIDs == [5])
+}

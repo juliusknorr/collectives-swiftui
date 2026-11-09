@@ -28,6 +28,18 @@ public struct PageLibraryState: Codable, Equatable, Sendable {
     }
 }
 
+extension PageLibraryState {
+    /// An unknown launch page from a newer version falls back to last opened instead of dropping favorites and recents.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        collectiveID = try container.decodeIfPresent(Int.self, forKey: .collectiveID)
+        launchPage = try? container.decodeIfPresent(LaunchPage.self, forKey: .launchPage)
+        pageID = try container.decodeIfPresent(Int.self, forKey: .pageID)
+        recentPageIDs = try container.decodeIfPresent([Int].self, forKey: .recentPageIDs) ?? []
+        favoritePageIDs = try container.decodeIfPresent([Int].self, forKey: .favoritePageIDs) ?? []
+    }
+}
+
 @MainActor
 public final class LibraryPreferences {
     private let defaults: UserDefaults
