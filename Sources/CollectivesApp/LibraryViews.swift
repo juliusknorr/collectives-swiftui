@@ -350,7 +350,7 @@ struct NewPageSheet: View {
         }
         .presentationDetents([.medium, .large])
         #if os(macOS)
-        .frame(width: 440, height: 260)
+        .frame(width: 440).frame(minHeight: 300, idealHeight: 340)
         #endif
         .interactiveDismissDisabled(submitting)
         .onAppear { titleFocused = true }
@@ -391,19 +391,20 @@ struct NewPageSheet: View {
 private struct PageLocationPicker: View {
     let collectiveName: String
     @Binding var selection: Int
-    private let entries: [PageTreeEntry]
+    private let pages: [Page]
+    @State private var entries: [PageTreeEntry] = []
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
 
     init(pages: [Page], collectiveName: String, selection: Binding<Int>) {
-        self.collectiveName = collectiveName; _selection = selection
-        entries = PageTree.flattened(pages: pages)
+        self.collectiveName = collectiveName; _selection = selection; self.pages = pages
     }
     var body: some View {
         List(PageTree.filter(entries, title: query)) { entry in
             Button { selection = entry.id; dismiss() } label: { row(entry) }
                 .buttonStyle(.plain)
         }
+        .task { if entries.isEmpty { entries = PageTree.flattened(pages: pages) } }
         #if os(macOS)
         .safeAreaInset(edge: .top) {
             TextField("Search", text: $query).textFieldStyle(.roundedBorder).padding([.horizontal, .top], 8)

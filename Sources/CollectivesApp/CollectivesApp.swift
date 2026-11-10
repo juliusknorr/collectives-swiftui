@@ -1488,8 +1488,10 @@ struct ContentView: View {
                 #endif
                 .disabled(!canCreatePage)
             Menu {
-                Button("New Page…", systemImage: "doc.badge.plus") { beginNewPage() }
-                    .disabled(!model.canEdit || model.pages.isEmpty)
+                Button(model.selectedPage == nil ? "New Page…" : "New Top-Level Page…", systemImage: "doc.badge.plus") {
+                    beginNewPage(parent: model.pages.first { $0.parentId == 0 })
+                }
+                .disabled(!model.canEdit || model.pages.isEmpty)
                 if let page = model.selectedPage {
                     Button("New Subpage…", systemImage: "doc.badge.plus") { beginNewPage(parent: page) }
                         .disabled(!canCreatePage)
@@ -1525,6 +1527,9 @@ struct ContentView: View {
     private var detailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let page = model.selectedPage, model.document != nil {
+                #if !os(macOS)
+                if !compact { pageModePicker }
+                #endif
                 if compact {
                     compactPagePath(page)
                 } else {
@@ -1615,7 +1620,7 @@ struct ContentView: View {
                     #if os(macOS)
                     pageModePicker.frame(width: 250)
                     #else
-                    if compact { pageModeMenu } else { pageModePicker.frame(width: 250) }
+                    if compact { pageModeMenu }
                     #endif
                     ShareLink("Share Markdown", item: model.text)
                         .labelStyle(.iconOnly).help("Share Markdown source")
