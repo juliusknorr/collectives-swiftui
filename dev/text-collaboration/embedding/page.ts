@@ -65,6 +65,11 @@ const instance = await createCollaborativeEditor({
 	sessionTransport: transport,
 	autofocus: false,
 	openLinkHandler: () => {},
+	onUpdate({ local }) {
+		if (loaded && local) {
+			edited = true
+		}
+	},
 	onLoaded() {
 		if (loaded) {
 			return
@@ -102,7 +107,6 @@ connection.onclick = () => {
 exportButton.onclick = () => {
 	showState()
 }
-document.querySelector('#editor')!.addEventListener('input', () => { edited = true })
 const lifecycle = new EmbeddingSession({
 	checkpoint: () => instance.exportState(),
 	freeze: () => { document.querySelector<HTMLElement>('#editor')!.inert = true },

@@ -19,6 +19,81 @@ test('no-edit embedding closes without a file save or source rewrite', async ({ 
 	expect((await (await request.get('/host/canonical')).json()).markdown).toBe(before.initial)
 })
 
+test('toolbar-only edits are saved without DOM input events', async ({ page, request }) => {
+	await page.goto(fixture + '?peer=A')
+	await expect(page.getByRole('button', { name: 'Save and close' })).toBeEnabled()
+	const editor = page.locator('.ProseMirror[contenteditable=true]')
+	await editor.click()
+	await editor.press('ControlOrMeta+a')
+	await page.evaluate(() => {
+		Object.assign(window, { embeddingInputCount: 0 })
+		document.querySelector('#editor')!.addEventListener('input', () => {
+			(window as any).embeddingInputCount++
+		})
+	})
+	await page.getByRole('button', { name: 'Bold', exact: true }).click()
+	await expect(editor.locator('strong').first()).toBeVisible()
+	expect(await page.evaluate(() => (window as any).embeddingInputCount)).toBe(0)
+	await page.getByRole('button', { name: 'Save and close' }).click()
+	await expect(page.getByRole('status')).toContainText('Closed · Save confirmed')
+	const canonical = await (await request.get('/host/canonical')).json()
+	expect(canonical.markdown).toContain('**Shared starting text.**')
+})
+
+test('public export retains unsynced edits after a rejected push', async ({ page }) => {
+	await page.goto(fixture + '?peer=A')
+	await expect(page.getByRole('button', { name: 'Export Yjs state' })).toBeEnabled()
+	await page.getByRole('button', { name: 'Export Yjs state' }).click()
+	const before = JSON.parse((await page.locator('#checkpoint').textContent())!)
+	await page.getByRole('button', { name: 'Disconnect', exact: true }).click()
+	const editor = page.locator('.ProseMirror[contenteditable=true]')
+	await editor.click()
+	await editor.press('ControlOrMeta+End')
+	await editor.pressSequentially(' Recover rejected work')
+	await page.route('**/host/A/push', (route) => route.fulfill({ status: 403, json: {} }))
+	const rejected = page.waitForResponse((response) => response.url().endsWith('/push') && response.status() === 403)
+	await page.getByRole('button', { name: 'Reconnect', exact: true }).click()
+	await rejected
+	await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', 'false')
+	await page.getByRole('button', { name: 'Export Yjs state' }).click()
+	const state = JSON.parse((await page.locator('#checkpoint').textContent())!)
+	expect(state.baseVersionEtag).toBe(before.baseVersionEtag)
+	expect(state.markdown).toContain('Recover rejected work')
+	const restored = new Y.Doc()
+	Y.applyUpdate(restored, Buffer.from(state.documentState, 'base64'))
+	expect(restored.getXmlFragment('default').toString()).toContain('Recover rejected work')
+	expect([...Y.encodeStateVector(restored)]).toEqual([...Buffer.from(state.stateVector, 'base64')])
+	restored.destroy()
+	expect(await page.evaluate(async () => (await fetch('/host/A/close', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).ok)).toBe(true)
+})
+
+test('programmatic edits save locally while a remote-only peer skips saving', async ({ browser, request, baseURL }) => {
+	const a = await browser.newContext({ baseURL })
+	const b = await browser.newContext({ baseURL })
+	try {
+		const pages = [await a.newPage(), await b.newPage()]
+		const before = await (await request.get('/host/info')).json()
+		for (const [index, page] of pages.entries()) {
+			await page.goto(fixture + '?peer=' + ['A', 'B'][index])
+			await expect(page.getByRole('button', { name: 'Save and close' })).toBeEnabled()
+		}
+		await pages[0].evaluate(() => {
+			(window as any).embeddingDemo.instance.insertAtCursor('Programmatic edit ')
+		})
+		await expect(pages[1].locator('.ProseMirror')).toContainText('Programmatic edit')
+		for (const [index, page] of pages.entries()) {
+			await page.getByRole('button', { name: 'Save and close' }).click()
+			await expect(page.getByRole('status')).toContainText(index === 0 ? 'Save confirmed' : 'No local edits; no file save')
+		}
+		const after = await (await request.get('/host/info')).json()
+		expect(after.counts.B.save ?? 0).toBe(before.counts.B.save ?? 0)
+		expect((await (await request.get('/host/canonical')).json()).markdown).toContain('Programmatic edit')
+	} finally {
+		await a.close()
+		await b.close()
+	}
+})
+
 test('isolated embedded clients converge, export Yjs state, reconnect and confirm save/close', async ({ browser, request, baseURL }) => {
 	const a = await browser.newContext({ baseURL })
 	const b = await browser.newContext({ baseURL })
